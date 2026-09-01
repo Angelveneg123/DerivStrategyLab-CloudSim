@@ -1,0 +1,36 @@
+{
+  "generated_at_utc": "2026-08-30T05:21:14.987332+00:00",
+  "initial_balance": 100.0,
+  "trades_count": 151,
+  "metadata": {
+    "symbol": "CRASH500",
+    "granularity": 60,
+    "strategy": "hybrid",
+    "candles": 40911,
+    "slippage_atr_max": 0.3,
+    "random_seed": 20260806,
+    "commission_per_trade_usd": 0.0
+  },
+  "metrics": {
+    "total_trades": 151,
+    "win_rate": 65.56291390728477,
+    "profit_factor": 3.173406483126017,
+    "max_drawdown_pct": 2.8308739161954573,
+    "total_return_pct": 86.92100027251917,
+    "final_balance": 186.92100027251917,
+    "circuit_breaker_activado": false,
+    "operaciones_cerradas_por_stop": 52,
+    "operaciones_cerradas_por_take": 99,
+    "r_multiple_promedio": 0.8352990829337634,
+    "operaciones_compra": 146,
+    "operaciones_venta": 5,
+    "slippage_total_puntos": 25.740762277994513,
+    "spread_cost_total": 3.441040005237772,
+    "commission_cost_total": 0.0
+  },
+  "model": {
+    "slippage": "adverso y reproducible; máximo configurable como fracción de ATR",
+    "spread": "estimación histórica ATR; demo MT5 usa bid/ask observado",
+    "commission": "configurable; demo MT5 registra commission/swap/fee reales"
+  }
+}

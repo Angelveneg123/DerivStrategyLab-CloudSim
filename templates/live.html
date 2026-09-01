@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deriv Strategy Lab — Operaciones {{ mode|upper }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <header class="top live-top">
+    <div>
+      <h1>DERIV STRATEGY LAB</h1>
+      <nav class="main-nav">
+        <a href="/">Backtester</a>
+        <a class="active" href="/live?mode={{ mode }}">Cuenta {{ mode|upper }}</a>
+      </nav>
+    </div>
+    <div><div class="mode-badge {{ 'real-mode' if mode == 'real' else 'demo-mode' }}">{{ mode|upper }}</div><div id="productBadge" class="muted" style="margin-top:6px;text-align:right">{{ configured_product }}</div></div>
+  </header>
+
+  <main>
+    {% if mode == 'real' %}
+    <section class="panel danger-panel">
+      <strong>Dinero real:</strong> {{ 'habilitado por configuración' if real_enabled else 'bloqueado por configuración' }}.
+      El panel no activa el bot ni elimina los candados del archivo .env.
+    </section>
+    {% else %}
+    <section class="panel info-panel">
+      Operaciones ejecutadas en la cuenta DEMO. La asignación configurada es de
+      <strong>${{ '%.2f'|format(configured_allocation) }}</strong>, aunque el saldo demo sea mayor.
+    </section>
+    {% endif %}
+
+    <section class="metrics-grid live-metrics">
+      <div class="metric-card"><div class="label">Estado</div><div id="status" class="value compact">--</div></div>
+      <div class="metric-card"><div class="label">Producto</div><div id="product" class="value compact">--</div></div>
+      <div class="metric-card"><div class="label">Activo</div><div id="symbol" class="value compact">--</div></div>
+      <div class="metric-card"><div class="label">Asignación</div><div id="allocation" class="value">--</div></div>
+      <div class="metric-card"><div class="label">Balance virtual</div><div id="virtualBalance" class="value">--</div></div>
+      <div class="metric-card"><div class="label">P&amp;L total</div><div id="totalPnl" class="value">--</div></div>
+      <div class="metric-card"><div class="label">P&amp;L diario</div><div id="dailyPnl" class="value">--</div></div>
+      <div class="metric-card"><div class="label">Drawdown</div><div id="drawdown" class="value">--</div></div>
+      <div class="metric-card"><div class="label">Win rate</div><div id="winRate" class="value">--</div></div>
+      <div class="metric-card"><div class="label">Posición / contrato</div><div id="openContract" class="value compact">--</div></div>
+      <div class="metric-card"><div class="label">P&amp;L flotante</div><div id="unrealized" class="value">--</div></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <h2>Curva de capital asignado</h2>
+        <span id="lastHeartbeat" class="muted">Sin heartbeat</span>
+      </div>
+      <canvas id="equityChart" height="85"></canvas>
+    </section>
+
+    <section class="panel">
+      <h2>Operaciones de la cuenta {{ mode|upper }}</h2>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Apertura</th><th>ID</th><th>Producto</th><th>Dirección</th><th>Tamaño / margen</th>
+              <th>SL / TP</th><th>Costos</th><th>P&amp;L</th><th>Estado</th><th>Salida</th>
+            </tr>
+          </thead>
+          <tbody id="tradesBody"><tr><td colspan="10">Todavía no hay operaciones.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Eventos recientes</h2>
+      <div id="events" class="events-list"><div class="muted">Sin eventos.</div></div>
+    </section>
+  </main>
+
+  <footer>
+    Vista de monitoreo. El bot se inicia desde terminal y el dashboard no contiene controles de compra.
+  </footer>
+
+  <script>
+    const mode = {{ mode|tojson }};
+    const refreshMs = {{ refresh_seconds|int }} * 1000;
+    const money = value => `$${Number(value || 0).toFixed(2)}`;
+    const signedMoney = value => `${Number(value || 0) >= 0 ? '+' : ''}$${Number(value || 0).toFixed(2)}`;
+    const setTone = (element, value) => {
+      element.classList.remove('positive', 'negative', 'neutral');
+      element.classList.add(Number(value) > 0 ? 'positive' : Number(value) < 0 ? 'negative' : 'neutral');
+    };
+    const formatTime = value => value ? new Date(value).toLocaleString() : '--';
+
+    const equityCanvas = document.getElementById('equityChart');
+    let lastCurve = [];
+
+    function drawEquity(curve) {
+      lastCurve = curve || [];
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(320, equityCanvas.clientWidth || 900);
+      const height = 260;
+      equityCanvas.width = Math.floor(width * ratio);
+      equityCanvas.height = Math.floor(height * ratio);
+      equityCanvas.style.height = `${height}px`;
+      const ctx = equityCanvas.getContext('2d');
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      const pad = { left: 62, right: 18, top: 22, bottom: 34 };
+      const plotW = width - pad.left - pad.right;
+      const plotH = height - pad.top - pad.bottom;
+      const values = lastCurve.length ? lastCurve.map(point => Number(point.balance || 0)) : [0];
+      let minValue = Math.min(...values);
+      let maxValue = Math.max(...values);
+      if (minValue === maxValue) {
+        minValue -= 1;
+        maxValue += 1;
+      }
+      const margin = Math.max((maxValue - minValue) * 0.12, 0.5);
+      minValue -= margin;
+      maxValue += margin;
+
+      ctx.font = '12px monospace';
+      ctx.textBaseline = 'middle';
+      ctx.strokeStyle = '#1E2733';
+      ctx.fillStyle = '#6B7688';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i += 1) {
+        const y = pad.top + (plotH * i / 4);
+        const value = maxValue - ((maxValue - minValue) * i / 4);
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(width - pad.right, y);
+        ctx.stroke();
+        ctx.fillText(`$${value.toFixed(2)}`, 5, y);
+      }
+
+      if (!lastCurve.length) {
+        ctx.fillStyle = '#6B7688';
+        ctx.textAlign = 'center';
+        ctx.fillText('La curva aparecerá después de registrar operaciones.', width / 2, height / 2);
+        ctx.textAlign = 'start';
+        return;
+      }
+
+      const xFor = index => pad.left + (lastCurve.length === 1 ? plotW / 2 : plotW * index / (lastCurve.length - 1));
+      const yFor = value => pad.top + (maxValue - value) * plotH / (maxValue - minValue);
+      ctx.strokeStyle = '#2FD7A0';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      values.forEach((value, index) => {
+        const x = xFor(index);
+        const y = yFor(value);
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      ctx.fillStyle = '#E4E9F0';
+      [0, Math.floor((lastCurve.length - 1) / 2), lastCurve.length - 1]
+        .filter((value, index, array) => array.indexOf(value) === index)
+        .forEach(index => {
+          const label = formatTime(lastCurve[index].time);
+          ctx.textAlign = index === 0 ? 'left' : index === lastCurve.length - 1 ? 'right' : 'center';
+          ctx.fillText(label, xFor(index), height - 12);
+        });
+      ctx.textAlign = 'start';
+    }
+
+    async function loadStatus() {
+      const response = await fetch(`/api/live/status?mode=${encodeURIComponent(mode)}`, { cache: 'no-store' });
+      const data = await response.json();
+      const state = data.state || {};
+      const metrics = data.metrics || {};
+      document.getElementById('status').textContent = state.status || 'stopped';
+      const product = (state.status === 'running' || state.current_contract_id) ? (state.execution_product || data.limits.execution_product) : data.limits.execution_product;
+      document.getElementById('product').textContent = product === 'cfd_standard' ? 'CFD Standard · MT5' : 'Multiplier · Options';
+      document.getElementById('productBadge').textContent = product === 'cfd_standard' ? 'CFD STANDARD / MT5' : 'MULTIPLIER / OPTIONS';
+      document.getElementById('symbol').textContent = state.symbol_name ? `${state.symbol_name} (${state.symbol_code})` : '--';
+      document.getElementById('allocation').textContent = money(metrics.allocation_capital || data.limits.configured_allocation);
+      document.getElementById('virtualBalance').textContent = money(metrics.virtual_balance);
+      document.getElementById('totalPnl').textContent = signedMoney(metrics.profit);
+      document.getElementById('dailyPnl').textContent = signedMoney(metrics.daily_pnl);
+      document.getElementById('drawdown').textContent = `${Number(metrics.drawdown_pct || 0).toFixed(2)}%`;
+      document.getElementById('winRate').textContent = `${Number(metrics.win_rate || 0).toFixed(1)}% (${metrics.total_trades || 0})`;
+      document.getElementById('openContract').textContent = state.current_contract_id ? `#${state.current_contract_id} ${state.current_direction || ''}` : 'Ninguno';
+      document.getElementById('unrealized').textContent = signedMoney(state.current_unrealized_pnl);
+      document.getElementById('lastHeartbeat').textContent = `Heartbeat: ${formatTime(state.last_heartbeat)}`;
+      ['totalPnl', 'dailyPnl', 'unrealized'].forEach(id => setTone(document.getElementById(id), id === 'totalPnl' ? metrics.profit : id === 'dailyPnl' ? metrics.daily_pnl : state.current_unrealized_pnl));
+      document.getElementById('status').className = `value compact status-${state.status || 'stopped'}`;
+    }
+
+    async function loadTrades() {
+      const response = await fetch(`/api/live/trades?mode=${encodeURIComponent(mode)}&limit=200`, { cache: 'no-store' });
+      const { trades } = await response.json();
+      const body = document.getElementById('tradesBody');
+      if (!trades.length) {
+        body.innerHTML = '<tr><td colspan="10">Todavía no hay operaciones.</td></tr>';
+        return;
+      }
+      body.innerHTML = trades.map(t => {
+        const netPnl = t.net_profit == null ? t.profit : t.net_profit;
+        const pnl = netPnl == null ? '--' : signedMoney(netPnl);
+        const pnlClass = netPnl > 0 ? 'positive' : netPnl < 0 ? 'negative' : 'neutral';
+        const product = t.execution_product || 'multiplier';
+        const isCfd = product === 'cfd_standard';
+        const size = isCfd
+          ? `${Number(t.volume_lots || 0).toFixed(2)} lot · margen ${money(t.margin_required || t.stake)}`
+          : `${money(t.stake)} · x${t.multiplier}`;
+        const limits = isCfd
+          ? `${Number(t.stop_loss_price || 0).toFixed(5)} / ${Number(t.take_profit_price || 0).toFixed(5)}`
+          : `${money(t.stop_loss_amount)} / ${money(t.take_profit_amount)}`;
+        const costs = isCfd
+          ? `spr ${Number(t.spread_points || 0).toFixed(1)} pt · com ${money(t.commission)} · swap ${money(t.swap)} · fee ${money(t.fee)}`
+          : `incluidos por broker`;
+        return `<tr>
+          <td>${formatTime(t.opened_at)}</td>
+          <td>#${t.contract_id || t.order_id || '--'}</td>
+          <td>${isCfd ? 'CFD Standard' : 'Multiplier'}</td>
+          <td class="${t.direction === 'BUY' ? 'buy' : 'sell'}">${t.direction}</td>
+          <td>${size}</td>
+          <td>${limits}</td>
+          <td>${costs}</td>
+          <td class="${pnlClass}">${pnl}</td>
+          <td><span class="pill ${t.status === 'closed' ? (netPnl > 0 ? 'win' : 'loss') : 'open'}">${t.status}</span></td>
+          <td>${t.exit_reason || '--'}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function loadEquity() {
+      const response = await fetch(`/api/live/equity?mode=${encodeURIComponent(mode)}`, { cache: 'no-store' });
+      const { curve } = await response.json();
+      drawEquity(curve);
+    }
+
+    async function loadEvents() {
+      const response = await fetch(`/api/live/events?mode=${encodeURIComponent(mode)}&limit=30`, { cache: 'no-store' });
+      const { events } = await response.json();
+      const box = document.getElementById('events');
+      box.innerHTML = events.length ? events.map(event => `<div class="event-row level-${event.level.toLowerCase()}"><span>${formatTime(event.created_at)}</span><strong>${event.event_type}</strong><span>${event.message}</span></div>`).join('') : '<div class="muted">Sin eventos.</div>';
+    }
+
+    async function refresh() {
+      try { await Promise.all([loadStatus(), loadTrades(), loadEquity(), loadEvents()]); }
+      catch (error) { console.error('Error actualizando dashboard:', error); }
+    }
+    window.addEventListener('resize', () => drawEquity(lastCurve));
+    refresh();
+    setInterval(refresh, refreshMs);
+  </script>
+</body>
+</html>

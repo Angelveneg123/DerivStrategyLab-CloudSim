@@ -1,0 +1,17 @@
+{
+  "total_trades": 46,
+  "win_rate": 43.47826086956522,
+  "profit_factor": 1.2639248374761123,
+  "max_drawdown_pct": 4.103144329863097,
+  "total_return_pct": 4.090680583064852,
+  "final_balance": 104.09068058306485,
+  "circuit_breaker_activado": false,
+  "operaciones_cerradas_por_stop": 26,
+  "operaciones_cerradas_por_take": 20,
+  "r_multiple_promedio": 0.17989619168731516,
+  "operaciones_compra": 25,
+  "operaciones_venta": 21,
+  "slippage_total_puntos": 9.433348363489328,
+  "spread_cost_total": 0.8091335062933837,
+  "commission_cost_total": 0.0
+}

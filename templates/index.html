@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deriv Strategy Lab — Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+
+  <div class="ticker-wrap">
+    <div class="ticker">
+      {% for t in trades_ticker %}
+      <span class="{{ 'buy' if t.direction == 'BUY' else 'sell' }}">
+        {{ t.direction }} {{ symbol }} @ {{ '%.5f'|format(t.entry_price) }} → {{
+        '%.5f'|format(t.exit_price) }} ({{ '%+.2f'|format(t.profit_pct) }}%)
+      </span>
+      {% endfor %}
+      {% for t in trades_ticker %}
+      <span class="{{ 'buy' if t.direction == 'BUY' else 'sell' }}">
+        {{ t.direction }} {{ symbol }} @ {{ '%.5f'|format(t.entry_price) }} → {{
+        '%.5f'|format(t.exit_price) }} ({{ '%+.2f'|format(t.profit_pct) }}%)
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+
+  <header class="top">
+    <div>
+      <h1>DERIV STRATEGY LAB</h1>
+      <nav class="main-nav"><a class="active" href="/">Backtester</a><a href="/live">Cuenta DEMO</a></nav>
+    </div>
+    <form class="dataset-picker" method="get" action="/">
+      <label for="dataset-select">Dataset</label>
+      <select id="dataset-select" name="dataset" onchange="
+        const [sym, gran] = this.value.split('|');
+        window.location.href = '/?symbol=' + encodeURIComponent(sym) + '&granularity=' + gran + '&estrategia={{ estrategia_id }}';
+      ">
+        {% for d in datasets %}
+        <option value="{{ d.symbol }}|{{ d.granularity }}" {% if d.symbol==symbol and d.granularity==granularity
+          %}selected{% endif %}>
+          {{ d.symbol }} · {{ d.granularity }}s · {{ d.total }} velas
+        </option>
+        {% endfor %}
+      </select>
+      <label for="estrategia-select">Estrategia</label>
+      <select id="estrategia-select" name="estrategia" onchange="
+        window.location.href = '/?symbol={{ symbol }}&granularity={{ granularity }}&estrategia=' + encodeURIComponent(this.value);
+      ">
+        {% for id, info in estrategias.items() %}
+        <option value="{{ id }}" {% if id==estrategia_id %}selected{% endif %}>{{ info.nombre }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    <div class="status"><span class="dot"></span>{{ symbol }} · {{ estrategia_nombre }} · {{ candle_count }} velas
+      analizadas</div>
+  </header>
+
+  <main>
+
+    {% if metrics.circuit_breaker_activado %}
+    <section class="panel" style="border-color: var(--amber);">
+      <p style="color: var(--amber); margin: 0;">
+        ⚠️ El circuit breaker de drawdown se activó durante este backtest: la estrategia dejó de abrir
+        operaciones nuevas antes del final del histórico para proteger el capital restante.
+      </p>
+    </section>
+    {% endif %}
+
+    <section class="metrics-grid">
+      <div class="metric-card">
+        <div class="label">Operaciones</div>
+        <div class="value">{{ metrics.total_trades }}</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Win Rate</div>
+        <div class="value {{ 'positive' if metrics.win_rate >= 50 else 'neutral' }}">{{ '%.1f'|format(metrics.win_rate)
+          }}%</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Profit Factor</div>
+        <div class="value {{ 'positive' if metrics.profit_factor >= 1 else 'negative' }}">{{
+          '%.2f'|format(metrics.profit_factor) }}</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Drawdown máx.</div>
+        <div class="value negative">{{ '%.1f'|format(metrics.max_drawdown_pct) }}%</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Retorno total</div>
+        <div class="value {{ 'positive' if metrics.total_return_pct >= 0 else 'negative' }}">{{
+          '%+.1f'|format(metrics.total_return_pct) }}%</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Balance final</div>
+        <div class="value">${{ '{:,.2f}'.format(metrics.final_balance) }}</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Reportes automáticos</h2>
+      {% if report_info %}
+      <p>Este backtest actualizó:</p>
+      <code>{{ report_info.output_dir }}</code>
+      <p class="muted">equity_curve.png · trades.csv · summary.json · metrics.json</p>
+      {% else %}
+      <p class="negative">No se pudieron generar los reportes: {{ report_error }}</p>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <h2>Precio &amp; señales</h2>
+      <canvas id="priceChart" height="90"></canvas>
+    </section>
+
+    <section class="panel">
+      <h2>Todas las operaciones ({{ trades_table|length }})</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Dirección</th>
+            <th>Entrada</th>
+            <th>Salida</th>
+            <th>P&amp;L</th>
+            <th>Motivo</th>
+            <th>Resultado</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in trades_table %}
+          <tr class="trade-row">
+            <td class="{{ 'buy' if t.direction == 'BUY' else 'sell' }}">{{ t.direction }}</td>
+            <td>{{ '%.5f'|format(t.entry_price) }}</td>
+            <td>{{ '%.5f'|format(t.exit_price) }}</td>
+            <td>{{ '%+.2f'|format(t.profit) }} ({{ '%+.2f'|format(t.profit_pct) }}%)</td>
+            <td>{{ t.motivo_salida }}</td>
+            <td>
+              {% if t.profit > 0 %}
+              <span class="pill win">GANADA</span>
+              {% else %}
+              <span class="pill loss">PERDIDA</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="pagination">
+        <button id="prevPage" class="page-btn">‹ Anterior</button>
+        <span id="pageInfo" class="page-info"></span>
+        <button id="nextPage" class="page-btn">Siguiente ›</button>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    Datos de backtest — no representa operaciones reales. Balance inicial simulado: ${{
+    '{:,.2f}'.format(initial_balance) }} ·
+    Riesgo por operación: {{ riesgo_por_operacion_pct }}% · Costo simulado: {{ spread_atr_frac }} del ATR.
+  </footer>
+
+  <script>
+    const chartLabels = {{ chart_labels | tojson }};
+    const chartCloses = {{ chart_closes | tojson }};
+    const buyPoints = {{ chart_buy_points | tojson }};
+    const sellPoints = {{ chart_sell_points | tojson }};
+
+    const priceCanvas = document.getElementById('priceChart');
+
+    function drawPriceChart() {
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(320, priceCanvas.clientWidth || 900);
+      const height = 300;
+      priceCanvas.width = Math.floor(width * ratio);
+      priceCanvas.height = Math.floor(height * ratio);
+      priceCanvas.style.height = `${height}px`;
+      const ctx = priceCanvas.getContext('2d');
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      const pad = { left: 72, right: 20, top: 20, bottom: 36 };
+      const plotW = width - pad.left - pad.right;
+      const plotH = height - pad.top - pad.bottom;
+      if (!chartCloses.length) return;
+      let minValue = Math.min(...chartCloses);
+      let maxValue = Math.max(...chartCloses);
+      const margin = Math.max((maxValue - minValue) * 0.08, Math.abs(maxValue) * 0.0001, 0.00001);
+      minValue -= margin;
+      maxValue += margin;
+      const xFor = index => pad.left + (chartCloses.length === 1 ? plotW / 2 : plotW * index / (chartCloses.length - 1));
+      const yFor = value => pad.top + (maxValue - value) * plotH / (maxValue - minValue);
+
+      ctx.font = '12px monospace';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i += 1) {
+        const y = pad.top + plotH * i / 4;
+        const value = maxValue - (maxValue - minValue) * i / 4;
+        ctx.strokeStyle = '#1E2733';
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(width - pad.right, y);
+        ctx.stroke();
+        ctx.fillStyle = '#6B7688';
+        ctx.fillText(value.toFixed(5), 5, y);
+      }
+
+      ctx.strokeStyle = '#8A96A8';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      chartCloses.forEach((value, index) => {
+        const x = xFor(index);
+        const y = yFor(Number(value));
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      buyPoints.forEach((value, index) => {
+        if (value == null) return;
+        const x = xFor(index);
+        const y = yFor(Number(value));
+        ctx.fillStyle = '#3DDC97';
+        ctx.beginPath();
+        ctx.moveTo(x, y - 7);
+        ctx.lineTo(x - 6, y + 5);
+        ctx.lineTo(x + 6, y + 5);
+        ctx.closePath();
+        ctx.fill();
+      });
+      sellPoints.forEach((value, index) => {
+        if (value == null) return;
+        const x = xFor(index);
+        const y = yFor(Number(value));
+        ctx.fillStyle = '#FF5C5C';
+        ctx.beginPath();
+        ctx.moveTo(x, y + 7);
+        ctx.lineTo(x - 6, y - 5);
+        ctx.lineTo(x + 6, y - 5);
+        ctx.closePath();
+        ctx.fill();
+      });
+
+      const labelIndexes = [0, Math.floor((chartLabels.length - 1) / 2), chartLabels.length - 1]
+        .filter((value, index, array) => array.indexOf(value) === index);
+      labelIndexes.forEach(index => {
+        const epoch = Number(chartLabels[index]);
+        const label = Number.isFinite(epoch) ? new Date(epoch * 1000).toLocaleString() : chartLabels[index];
+        ctx.fillStyle = '#6B7688';
+        ctx.textAlign = index === 0 ? 'left' : index === chartLabels.length - 1 ? 'right' : 'center';
+        ctx.fillText(label, xFor(index), height - 13);
+      });
+      ctx.textAlign = 'start';
+    }
+
+    drawPriceChart();
+    window.addEventListener('resize', drawPriceChart);
+
+    // --- Paginación de la tabla de operaciones -------------------------
+    const ROWS_PER_PAGE = 10;
+    const rows = Array.from(document.querySelectorAll('.trade-row'));
+    const totalPages = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
+    let currentPage = 1;
+
+    function renderPage(page) {
+      currentPage = Math.min(Math.max(page, 1), totalPages);
+      rows.forEach((row, i) => {
+        const rowPage = Math.floor(i / ROWS_PER_PAGE) + 1;
+        row.style.display = (rowPage === currentPage) ? '' : 'none';
+      });
+      document.getElementById('pageInfo').textContent =
+        `Página ${currentPage} de ${totalPages}`;
+      document.getElementById('prevPage').disabled = currentPage === 1;
+      document.getElementById('nextPage').disabled = currentPage === totalPages;
+    }
+
+    document.getElementById('prevPage').addEventListener('click', () => renderPage(currentPage - 1));
+    document.getElementById('nextPage').addEventListener('click', () => renderPage(currentPage + 1));
+
+    renderPage(1);
+  </script>
+
+</body>
+
+</html>

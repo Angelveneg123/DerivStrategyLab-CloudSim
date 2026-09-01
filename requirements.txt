@@ -1,0 +1,9 @@
+pandas
+numpy
+requests
+websocket-client
+python-dotenv
+flask
+waitress
+matplotlib
+MetaTrader5; platform_system == "Windows"

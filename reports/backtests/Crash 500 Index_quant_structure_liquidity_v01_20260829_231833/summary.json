@@ -1,0 +1,28 @@
+{
+  "generated_at_utc": "2026-08-30T05:18:33.173550+00:00",
+  "initial_balance": 100.0,
+  "trades_count": 0,
+  "metadata": {
+    "symbol": "Crash 500 Index",
+    "granularity": 60,
+    "strategy": "quant_structure_liquidity_v01",
+    "candles": 8439,
+    "slippage_atr_max": 0.3,
+    "random_seed": 20260806,
+    "commission_per_trade_usd": 0.0
+  },
+  "metrics": {
+    "total_trades": 0,
+    "win_rate": 0,
+    "profit_factor": 0,
+    "max_drawdown_pct": 0,
+    "total_return_pct": 0,
+    "final_balance": 100.0,
+    "circuit_breaker_activado": false
+  },
+  "model": {
+    "slippage": "adverso y reproducible; máximo configurable como fracción de ATR",
+    "spread": "estimación histórica ATR; demo MT5 usa bid/ask observado",
+    "commission": "configurable; demo MT5 registra commission/swap/fee reales"
+  }
+}
