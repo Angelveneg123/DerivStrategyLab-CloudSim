@@ -228,40 +228,93 @@ def resolve_symbol(ws):
 
 
 def fetch_history(ws, symbol_code):
-    request = {
-        "ticks_history": symbol_code,
-        "end": "latest",
-        "count": WARMUP_CANDLES,
-        "style": "candles",
-        "granularity": GRANULARITY,
-        "adjust_start_time": 1,
-        "req_id": 102,
-    }
+    """
+    Descarga el warmup histórico en varios bloques.
 
-    msg = ws_request(ws, request, {"candles", "history"})
-    candles = msg.get("candles") or []
+    El endpoint público puede devolver alrededor de 1000 velas por solicitud.
+    Como Hybrid necesita más contexto, retrocedemos usando `end` hasta reunir
+    WARMUP_CANDLES velas cerradas.
+    """
+    target = max(1, WARMUP_CANDLES)
+    batch_size = 1000
+    end_value = "latest"
+    by_epoch = {}
+    req_id = 200
+    max_batches = (target // batch_size) + 4
 
-    if not candles:
-        raise RuntimeError("Deriv no devolvió velas históricas.")
+    for _ in range(max_batches):
+        request = {
+            "ticks_history": symbol_code,
+            "end": end_value,
+            "count": batch_size,
+            "style": "candles",
+            "granularity": GRANULARITY,
+            "adjust_start_time": 1,
+            "subscribe": 0,
+            "req_id": req_id,
+        }
+        req_id += 1
 
-    cleaned = []
-    for c in candles:
-        cleaned.append(
-            {
-                "epoch": int(c["epoch"]),
+        msg = ws_request(ws, request, {"candles", "history"})
+        batch = msg.get("candles") or []
+
+        if not batch:
+            break
+
+        oldest_epoch = None
+
+        for c in batch:
+            epoch = int(c["epoch"])
+            oldest_epoch = epoch if oldest_epoch is None else min(oldest_epoch, epoch)
+
+            by_epoch[epoch] = {
+                "epoch": epoch,
                 "open": float(c["open"]),
                 "high": float(c["high"]),
                 "low": float(c["low"]),
                 "close": float(c["close"]),
             }
-        )
 
-    cleaned.sort(key=lambda x: x["epoch"])
+        now_epoch = int(time.time())
+        current_bucket = now_epoch - (now_epoch % GRANULARITY)
+        closed_count = sum(1 for epoch in by_epoch if epoch < current_bucket)
 
-    # Solo velas ya cerradas.
+        if closed_count >= target:
+            break
+
+        if oldest_epoch is None:
+            break
+
+        end_value = max(1, oldest_epoch - 1)
+
+    if not by_epoch:
+        raise RuntimeError("Deriv no devolvió velas históricas.")
+
     now_epoch = int(time.time())
     current_bucket = now_epoch - (now_epoch % GRANULARITY)
-    return [c for c in cleaned if c["epoch"] < current_bucket]
+
+    cleaned = [
+        candle
+        for epoch, candle in by_epoch.items()
+        if epoch < current_bucket
+    ]
+    cleaned.sort(key=lambda x: x["epoch"])
+
+    if len(cleaned) < target:
+        raise RuntimeError(
+            f"Histórico insuficiente tras paginar: "
+            f"{len(cleaned)}/{target} velas."
+        )
+
+    cleaned = cleaned[-target:]
+
+    print(
+        f"[CloudSim] histórico listo: {len(cleaned)} velas cerradas "
+        f"de {GRANULARITY}s para {symbol_code}",
+        flush=True,
+    )
+
+    return cleaned
 
 
 def arrays_from_candles(candles):
