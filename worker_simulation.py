@@ -250,7 +250,6 @@ def fetch_history(ws, symbol_code):
             "style": "candles",
             "granularity": GRANULARITY,
             "adjust_start_time": 1,
-            "subscribe": 0,
             "req_id": req_id,
         }
         req_id += 1
