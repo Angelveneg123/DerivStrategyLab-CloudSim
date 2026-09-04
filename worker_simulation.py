@@ -165,7 +165,6 @@ def resolve_symbol(ws):
         ws,
         {
             "active_symbols": "brief",
-            "product_type": "basic",
             "req_id": 101,
         },
         {"active_symbols"},
@@ -175,16 +174,32 @@ def resolve_symbol(ws):
     q = SYMBOL_QUERY.strip().lower()
 
     for item in symbols:
-        code = str(item.get("symbol", "")).strip()
-        name = str(item.get("display_name", "")).strip()
+        code = str(
+            item.get("underlying_symbol")
+            or item.get("symbol")
+            or ""
+        ).strip()
+        name = str(
+            item.get("underlying_symbol_name")
+            or item.get("display_name")
+            or ""
+        ).strip()
         if q in {code.lower(), name.lower()}:
             return code, name or code
 
     # Fallback robusto para Crash 500.
     candidates = []
     for item in symbols:
-        code = str(item.get("symbol", "")).strip()
-        name = str(item.get("display_name", "")).strip()
+        code = str(
+            item.get("underlying_symbol")
+            or item.get("symbol")
+            or ""
+        ).strip()
+        name = str(
+            item.get("underlying_symbol_name")
+            or item.get("display_name")
+            or ""
+        ).strip()
         haystack = f"{code} {name}".lower()
         if "crash" in haystack and "500" in haystack:
             candidates.append((code, name or code))
@@ -194,8 +209,16 @@ def resolve_symbol(ws):
 
     # Algunos catálogos pueden exponer solamente el código.
     for item in symbols:
-        code = str(item.get("symbol", "")).strip()
-        name = str(item.get("display_name", "")).strip()
+        code = str(
+            item.get("underlying_symbol")
+            or item.get("symbol")
+            or ""
+        ).strip()
+        name = str(
+            item.get("underlying_symbol_name")
+            or item.get("display_name")
+            or ""
+        ).strip()
         if "500" in code.lower() and ("crash" in code.lower() or "boom" not in code.lower()):
             return code, name or code
 
@@ -631,6 +654,11 @@ def run_session(state):
 
 
 def main():
+    print(
+        f"[CloudSim] iniciando CFD Standard virtual | "
+        f"symbol={SYMBOL_QUERY} | strategy={STRATEGY} | ws={DERIV_WS}",
+        flush=True,
+    )
     state = load_state()
 
     # Guarda un estado visible desde el inicio.
@@ -648,6 +676,7 @@ def main():
             break
 
         except Exception as exc:
+            print(f"[CloudSim] error: {exc}", flush=True)
             state["running"] = False
             state["last_error"] = str(exc)
             state["note"] = f"Reconectando mercado público: {exc}"
