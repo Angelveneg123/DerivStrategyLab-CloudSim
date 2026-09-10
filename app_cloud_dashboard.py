@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 
 DATA_ROOT = Path(os.getenv("SIM_DATA_DIR", "/data/cloud_sim"))
 if not DATA_ROOT.exists():
@@ -30,6 +30,22 @@ def read_jsonl(path, limit=50):
     return rows[-limit:]
 
 
+def read_all_jsonl(path):
+    """Lee todo el historial para permitir paginación real en el dashboard."""
+    if not path.exists():
+        return []
+    rows = []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+    except Exception:
+        return []
+    return rows
+
+
 HTML = r"""
 <!doctype html>
 <html lang="es">
@@ -52,6 +68,13 @@ h1{margin:0 0 4px}.sub{color:#93c5fd;margin-bottom:20px}
 table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}
 th,td{padding:9px;border-bottom:1px solid #334155;text-align:left;white-space:nowrap}
 .scroll{overflow-x:auto}
+.pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px;flex-wrap:wrap}
+.pagination-info{color:#94a3b8;font-size:14px}
+.pagination-controls{display:flex;align-items:center;gap:8px}
+.page-btn{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:700}
+.page-btn:hover:not(:disabled){background:#334155}
+.page-btn:disabled{opacity:.45;cursor:not-allowed}
+.page-number{min-width:110px;text-align:center;color:#cbd5e1;font-size:14px}
 canvas{width:100%;height:220px;background:#0b1220;border-radius:10px;margin-top:10px}
 @media(max-width:600px){body{padding:12px}.value{font-size:24px}}
 </style>
@@ -93,6 +116,14 @@ canvas{width:100%;height:220px;background:#0b1220;border-radius:10px;margin-top:
         <tbody id="tradeRows"><tr><td colspan="7">Sin trades todavía</td></tr></tbody>
       </table>
     </div>
+    <div class="pagination">
+      <div id="paginationInfo" class="pagination-info">Mostrando 0 operaciones</div>
+      <div class="pagination-controls">
+        <button id="prevPage" class="page-btn" type="button">← Anterior</button>
+        <span id="pageNumber" class="page-number">Página 1 de 1</span>
+        <button id="nextPage" class="page-btn" type="button">Siguiente →</button>
+      </div>
+    </div>
   </div>
 
   <div class="card" style="margin-top:16px">
@@ -107,6 +138,28 @@ canvas{width:100%;height:220px;background:#0b1220;border-radius:10px;margin-top:
 function money(v){const n=Number(v||0);return (n>=0?'+$':'-$')+Math.abs(n).toFixed(2)}
 function num(v,d=3){const n=Number(v);return Number.isFinite(n)?n.toFixed(d):'-'}
 function card(label,value){return `<div><div class="muted">${label}</div><div class="small-value">${value}</div></div>`}
+
+const TRADES_PER_PAGE = 30;
+let currentTradePage = 1;
+let totalTradePages = 1;
+
+function updatePagination(meta){
+  const total=Number(meta.total||0);
+  const page=Number(meta.page||1);
+  const perPage=Number(meta.per_page||TRADES_PER_PAGE);
+  const totalPages=Math.max(1,Number(meta.total_pages||1));
+  currentTradePage=page;
+  totalTradePages=totalPages;
+
+  const start=total ? ((page-1)*perPage)+1 : 0;
+  const end=total ? Math.min(page*perPage,total) : 0;
+  document.getElementById('paginationInfo').textContent = total
+    ? `Mostrando ${start}–${end} de ${total} operaciones`
+    : 'Mostrando 0 operaciones';
+  document.getElementById('pageNumber').textContent=`Página ${page} de ${totalPages}`;
+  document.getElementById('prevPage').disabled=page<=1;
+  document.getElementById('nextPage').disabled=page>=totalPages;
+}
 
 function drawEquity(rows){
   const c=document.getElementById('equityChart'),ctx=c.getContext('2d');
@@ -128,8 +181,14 @@ function drawEquity(rows){
 
 async function refresh(){
   try{
-    const [sr,tr,er]=await Promise.all([fetch('/api/state'),fetch('/api/trades'),fetch('/api/equity')]);
-    const s=await sr.json(), trades=await tr.json(), equity=await er.json();
+    const [sr,tr,er]=await Promise.all([
+      fetch('/api/state'),
+      fetch(`/api/trades?page=${currentTradePage}&per_page=${TRADES_PER_PAGE}`),
+      fetch('/api/equity')
+    ]);
+    const s=await sr.json(), tradeData=await tr.json(), equity=await er.json();
+    const trades=Array.isArray(tradeData) ? tradeData : (tradeData.trades||[]);
+    if(!Array.isArray(tradeData)) updatePagination(tradeData);
 
     document.getElementById('status').textContent=s.running?'SIMULADOR ACTIVO':'RECONECTANDO';
     document.getElementById('subtitle').textContent=`${s.symbol||'Crash 500'} · ${s.strategy||'hybrid_long_only'} · ${s.granularity||60}s · sin órdenes`;
@@ -153,7 +212,7 @@ async function refresh(){
       : '<div>Ninguna</div>';
 
     const tbody=document.getElementById('tradeRows');
-    tbody.innerHTML=trades.length ? trades.slice().reverse().map(t=>
+    tbody.innerHTML=trades.length ? trades.map(t=>
       `<tr><td>${t.exit_time||'-'}</td><td>${t.direction||'-'}</td><td>${num(t.entry_price)}</td><td>${num(t.exit_price)}</td><td>${t.exit_reason||'-'}</td><td class="${Number(t.profit)>=0?'good':'bad'}">${money(t.profit)}</td><td>$${Number(t.balance_after||0).toFixed(2)}</td></tr>`
     ).join('') : '<tr><td colspan="7">Sin trades todavía</td></tr>';
 
@@ -165,6 +224,14 @@ async function refresh(){
     document.getElementById('status').textContent='SIN CONEXIÓN';
   }
 }
+
+document.getElementById('prevPage').addEventListener('click',()=>{
+  if(currentTradePage>1){currentTradePage--;refresh();}
+});
+document.getElementById('nextPage').addEventListener('click',()=>{
+  if(currentTradePage<totalTradePages){currentTradePage++;refresh();}
+});
+
 refresh();setInterval(refresh,5000);
 </script>
 </body>
@@ -200,7 +267,37 @@ def api_state():
 
 @app.route("/api/trades")
 def api_trades():
-    return jsonify(read_jsonl(TRADES_FILE, limit=30))
+    # Compatibilidad: sin parámetros conserva la respuesta antigua (últimos 30).
+    if "page" not in request.args and "per_page" not in request.args:
+        return jsonify(read_jsonl(TRADES_FILE, limit=30))
+
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        per_page = int(request.args.get("per_page", 30))
+    except (TypeError, ValueError):
+        per_page = 30
+    per_page = min(100, max(1, per_page))
+
+    # El archivo está guardado cronológicamente. Invertimos para mostrar primero
+    # las operaciones más recientes y luego paginamos.
+    rows = list(reversed(read_all_jsonl(TRADES_FILE)))
+    total = len(rows)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    page_rows = rows[start:start + per_page]
+
+    # El frontend ya no necesita invertir la página porque aquí llega newest-first.
+    return jsonify({
+        "trades": page_rows,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+    })
 
 
 @app.route("/api/equity")
