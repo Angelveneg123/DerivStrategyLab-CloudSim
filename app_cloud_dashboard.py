@@ -75,8 +75,13 @@ th,td{padding:9px;border-bottom:1px solid #334155;text-align:left;white-space:no
 .page-btn:hover:not(:disabled){background:#334155}
 .page-btn:disabled{opacity:.45;cursor:not-allowed}
 .page-number{min-width:110px;text-align:center;color:#cbd5e1;font-size:14px}
-canvas{width:100%;height:220px;background:#0b1220;border-radius:10px;margin-top:10px}
-@media(max-width:600px){body{padding:12px}.value{font-size:24px}}
+.equity-card{margin-top:16px}
+.equity-chart-wrap{position:relative;width:100%;height:340px;min-height:260px;margin-top:10px;overflow:hidden;border-radius:12px;background:#0b1220}
+#equityChart{display:block;width:100%;height:100%;background:#0b1220;border-radius:12px}
+.equity-stats{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:10px;color:#94a3b8;font-size:13px}
+@media(max-width:900px){.equity-chart-wrap{height:280px}}
+@media(max-width:600px){body{padding:12px}.value{font-size:24px}.equity-chart-wrap{height:220px;min-height:200px}.equity-card{padding:12px}.equity-stats{font-size:12px;gap:8px}}
+@media(max-width:380px){.equity-chart-wrap{height:190px;min-height:180px}}
 </style>
 </head>
 <body>
@@ -103,9 +108,15 @@ canvas{width:100%;height:220px;background:#0b1220;border-radius:10px;margin-top:
     <div id="openTrade" class="trade-grid"><div>Ninguna</div></div>
   </div>
 
-  <div class="card" style="margin-top:16px">
+  <div class="card equity-card">
     <div class="muted">Curva de equity</div>
-    <canvas id="equityChart" width="1100" height="220"></canvas>
+    <div class="equity-chart-wrap" id="equityChartWrap">
+      <canvas id="equityChart"></canvas>
+    </div>
+    <div class="equity-stats">
+      <span id="equityRange">Rango: -</span>
+      <span id="equityPoints">0 puntos</span>
+    </div>
   </div>
 
   <div class="card" style="margin-top:16px">
@@ -142,6 +153,8 @@ function card(label,value){return `<div><div class="muted">${label}</div><div cl
 const TRADES_PER_PAGE = 30;
 let currentTradePage = 1;
 let totalTradePages = 1;
+let lastEquityRows = [];
+let resizeTimer = null;
 
 function updatePagination(meta){
   const total=Number(meta.total||0);
@@ -162,22 +175,122 @@ function updatePagination(meta){
 }
 
 function drawEquity(rows){
-  const c=document.getElementById('equityChart'),ctx=c.getContext('2d');
-  ctx.clearRect(0,0,c.width,c.height);
-  if(!rows.length){ctx.fillStyle='#94a3b8';ctx.fillText('Sin datos de equity todavía',20,30);return}
-  const vals=rows.map(x=>Number(x.equity||0)).filter(Number.isFinite);
-  if(vals.length<2){return}
-  const min=Math.min(...vals),max=Math.max(...vals),span=Math.max(0.01,max-min);
-  ctx.strokeStyle='#93c5fd';ctx.lineWidth=2;ctx.beginPath();
-  vals.forEach((v,i)=>{
-    const x=15+(c.width-30)*(i/(vals.length-1));
-    const y=15+(c.height-30)*(1-(v-min)/span);
-    if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
-  });
-  ctx.stroke();
+  const canvas=document.getElementById('equityChart');
+  const wrap=document.getElementById('equityChartWrap');
+  const ctx=canvas.getContext('2d');
+
+  const cssWidth=Math.max(280,wrap.clientWidth);
+  const cssHeight=Math.max(180,wrap.clientHeight);
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+
+  canvas.width=Math.round(cssWidth*dpr);
+  canvas.height=Math.round(cssHeight*dpr);
+  canvas.style.width=cssWidth+'px';
+  canvas.style.height=cssHeight+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,cssWidth,cssHeight);
+
+  const cleanRows=(rows||[]).filter(x=>Number.isFinite(Number(x.equity)));
+  const vals=cleanRows.map(x=>Number(x.equity));
+
+  document.getElementById('equityPoints').textContent=`${vals.length} punto${vals.length===1?'':'s'}`;
+
+  if(!vals.length){
+    document.getElementById('equityRange').textContent='Rango: -';
+    ctx.fillStyle='#94a3b8';
+    ctx.font='14px Arial';
+    ctx.fillText('Sin datos de equity todavía',18,30);
+    return;
+  }
+
+  const min=Math.min(...vals), max=Math.max(...vals);
+  document.getElementById('equityRange').textContent=`Min $${min.toFixed(2)} · Max $${max.toFixed(2)}`;
+
+  const rawSpan=max-min;
+  const padValue=Math.max(rawSpan*0.12,0.50);
+  const chartMin=min-padValue;
+  const chartMax=max+padValue;
+  const span=Math.max(0.01,chartMax-chartMin);
+
+  const isMobile=cssWidth<600;
+  const left=isMobile?42:58;
+  const right=isMobile?12:20;
+  const top=16;
+  const bottom=isMobile?30:34;
+  const plotW=Math.max(1,cssWidth-left-right);
+  const plotH=Math.max(1,cssHeight-top-bottom);
+
+  // Fondo y rejilla horizontal.
+  ctx.strokeStyle='#1e293b';
+  ctx.lineWidth=1;
+  ctx.font=isMobile?'10px Arial':'11px Arial';
   ctx.fillStyle='#94a3b8';
-  ctx.fillText(`min ${min.toFixed(2)} · max ${max.toFixed(2)}`,20,c.height-8);
+  ctx.textAlign='right';
+  ctx.textBaseline='middle';
+
+  const yTicks=isMobile?3:5;
+  for(let i=0;i<yTicks;i++){
+    const ratio=i/(yTicks-1);
+    const y=top+plotH*ratio;
+    const value=chartMax-span*ratio;
+    ctx.beginPath();
+    ctx.moveTo(left,y);
+    ctx.lineTo(left+plotW,y);
+    ctx.stroke();
+    ctx.fillText('$'+value.toFixed(0),left-7,y);
+  }
+
+  // Eje inferior tenue.
+  ctx.beginPath();
+  ctx.moveTo(left,top+plotH);
+  ctx.lineTo(left+plotW,top+plotH);
+  ctx.stroke();
+
+  // Curva de equity.
+  const gradient=ctx.createLinearGradient(0,top,0,top+plotH);
+  gradient.addColorStop(0,'rgba(147,197,253,0.18)');
+  gradient.addColorStop(1,'rgba(147,197,253,0.01)');
+
+  const points=vals.map((v,i)=>({
+    x:left+(vals.length===1?plotW/2:plotW*(i/(vals.length-1))),
+    y:top+plotH*(1-(v-chartMin)/span)
+  }));
+
+  if(points.length>1){
+    ctx.beginPath();
+    ctx.moveTo(points[0].x,top+plotH);
+    points.forEach((pt,i)=>i===0?ctx.lineTo(pt.x,pt.y):ctx.lineTo(pt.x,pt.y));
+    ctx.lineTo(points[points.length-1].x,top+plotH);
+    ctx.closePath();
+    ctx.fillStyle=gradient;
+    ctx.fill();
+  }
+
+  ctx.beginPath();
+  points.forEach((pt,i)=>i===0?ctx.moveTo(pt.x,pt.y):ctx.lineTo(pt.x,pt.y));
+  ctx.strokeStyle='#93c5fd';
+  ctx.lineWidth=isMobile?2:2.5;
+  ctx.lineJoin='round';
+  ctx.lineCap='round';
+  ctx.stroke();
+
+  // Último valor resaltado.
+  const last=points[points.length-1];
+  ctx.beginPath();
+  ctx.arc(last.x,last.y,isMobile?3:4,0,Math.PI*2);
+  ctx.fillStyle='#bfdbfe';
+  ctx.fill();
+
+  ctx.textAlign='left';
+  ctx.textBaseline='alphabetic';
+  ctx.fillStyle='#cbd5e1';
+  ctx.font=isMobile?'11px Arial':'12px Arial';
+  const label=`$${vals[vals.length-1].toFixed(2)}`;
+  const labelX=Math.min(last.x+7,cssWidth-right-ctx.measureText(label).width);
+  const labelY=Math.max(top+12,last.y-8);
+  ctx.fillText(label,labelX,labelY);
 }
+
 
 async function refresh(){
   try{
@@ -216,7 +329,8 @@ async function refresh(){
       `<tr><td>${t.exit_time||'-'}</td><td>${t.direction||'-'}</td><td>${num(t.entry_price)}</td><td>${num(t.exit_price)}</td><td>${t.exit_reason||'-'}</td><td class="${Number(t.profit)>=0?'good':'bad'}">${money(t.profit)}</td><td>$${Number(t.balance_after||0).toFixed(2)}</td></tr>`
     ).join('') : '<tr><td colspan="7">Sin trades todavía</td></tr>';
 
-    drawEquity(equity);
+    lastEquityRows = Array.isArray(equity) ? equity : [];
+    drawEquity(lastEquityRows);
     document.getElementById('updated').textContent='Actualizado: '+(s.updated_at||'-');
     document.getElementById('note').textContent=s.note||'';
     document.getElementById('error').textContent=s.last_error?'Último error: '+s.last_error:'';
@@ -230,6 +344,11 @@ document.getElementById('prevPage').addEventListener('click',()=>{
 });
 document.getElementById('nextPage').addEventListener('click',()=>{
   if(currentTradePage<totalTradePages){currentTradePage++;refresh();}
+});
+
+window.addEventListener('resize',()=>{
+  clearTimeout(resizeTimer);
+  resizeTimer=setTimeout(()=>drawEquity(lastEquityRows),120);
 });
 
 refresh();setInterval(refresh,5000);
