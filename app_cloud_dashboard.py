@@ -1,8 +1,13 @@
+import csv
+import io
 import json
+import math
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, Response, jsonify, render_template_string, request
 
 DATA_ROOT = Path(os.getenv("SIM_DATA_DIR", "/data/cloud_sim"))
 if not DATA_ROOT.exists():
@@ -13,6 +18,8 @@ TRADES_FILE = DATA_ROOT / "trades.jsonl"
 EQUITY_FILE = DATA_ROOT / "equity.jsonl"
 
 app = Flask(__name__)
+LOCAL_TZ = ZoneInfo("America/Managua")
+UTC_TZ = ZoneInfo("UTC")
 
 
 def read_jsonl(path, limit=50):
@@ -44,6 +51,130 @@ def read_all_jsonl(path):
     except Exception:
         return []
     return rows
+
+
+
+def _f(v, default=0.0):
+    try:
+        n = float(v)
+        return n if math.isfinite(n) else default
+    except Exception:
+        return default
+
+
+def _local_dt(value):
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC_TZ)
+        return dt.astimezone(LOCAL_TZ)
+    except Exception:
+        return None
+
+
+def _normalized_trades():
+    rows = []
+    for raw in read_all_jsonl(TRADES_FILE):
+        dt = _local_dt(raw.get("exit_time") or raw.get("time") or raw.get("timestamp"))
+        if not dt:
+            continue
+        t = dict(raw)
+        t["_dt"] = dt
+        t["_date"] = dt.date().isoformat()
+        t["_p"] = _f(raw.get("profit"))
+        t["_bal"] = _f(raw.get("balance_after"))
+        rows.append(t)
+    rows.sort(key=lambda x: x["_dt"])
+    return rows
+
+
+def _pf(gp, gl):
+    if gl <= 0:
+        return None if gp <= 0 else 999999.0
+    return gp / gl
+
+
+def _stats(trades):
+    trades = sorted(trades, key=lambda x: x["_dt"])
+    total = len(trades)
+    wins = sum(t["_p"] > 0 for t in trades)
+    losses = sum(t["_p"] < 0 for t in trades)
+    gp = sum(t["_p"] for t in trades if t["_p"] > 0)
+    gl = abs(sum(t["_p"] for t in trades if t["_p"] < 0))
+    net = sum(t["_p"] for t in trades)
+    start = (trades[0]["_bal"] - trades[0]["_p"]) if trades else 0.0
+    end = trades[-1]["_bal"] if trades else 0.0
+    peak = start
+    max_dd = 0.0
+    for t in trades:
+        bal = t["_bal"]
+        if bal > peak:
+            peak = bal
+        if peak > 0:
+            max_dd = max(max_dd, (peak-bal)/peak*100.0)
+    mw=ml=cw=cl=0
+    for t in trades:
+        if t["_p"] > 0:
+            cw += 1; cl = 0; mw = max(mw,cw)
+        elif t["_p"] < 0:
+            cl += 1; cw = 0; ml = max(ml,cl)
+        else:
+            cw=cl=0
+    return {
+        "total": total, "wins": wins, "losses": losses,
+        "win_rate": (wins/total*100.0) if total else 0.0,
+        "gross_profit": gp, "gross_loss": gl, "net": net,
+        "start_balance": start, "end_balance": end,
+        "profitability_pct": (net/start*100.0) if start else 0.0,
+        "profit_factor": _pf(gp,gl), "max_drawdown_pct": max_dd,
+        "avg_win": (gp/wins) if wins else 0.0,
+        "avg_loss": (gl/losses) if losses else 0.0,
+        "best_trade": max((t["_p"] for t in trades), default=0.0),
+        "worst_trade": min((t["_p"] for t in trades), default=0.0),
+        "max_win_streak": mw, "max_loss_streak": ml,
+    }
+
+
+def _build_report():
+    trades = _normalized_trades()
+    today = datetime.now(LOCAL_TZ).date()
+    mode = (request.args.get("range") or "15").lower()
+    if mode == "today":
+        start = end = today
+    elif mode in {"7","15","30"}:
+        end = today; start = today - timedelta(days=int(mode)-1)
+    elif mode == "custom":
+        try:
+            start = datetime.strptime(request.args.get("start", ""), "%Y-%m-%d").date()
+            end = datetime.strptime(request.args.get("end", ""), "%Y-%m-%d").date()
+        except Exception:
+            start = end = today
+        if start > end: start, end = end, start
+    else:
+        dates=[t["_dt"].date() for t in trades]
+        start=min(dates) if dates else today
+        end=max(dates) if dates else today
+    filt=[t for t in trades if start <= t["_dt"].date() <= end]
+    by={}
+    for t in filt: by.setdefault(t["_date"],[]).append(t)
+    daily=[]
+    for d in sorted(by):
+        st=_stats(by[d]); st["date"]=d
+        st["status"]="positive" if st["net"]>0 else ("negative" if st["net"]<0 else "breakeven")
+        daily.append(st)
+    overall=_stats(filt)
+    overall.update({
+        "days":len(daily),
+        "positive_days":sum(d["net"]>0 for d in daily),
+        "negative_days":sum(d["net"]<0 for d in daily),
+        "avg_daily_net":sum(d["net"] for d in daily)/len(daily) if daily else 0.0,
+        "best_day":max(daily,key=lambda x:x["net"],default=None),
+        "worst_day":min(daily,key=lambda x:x["net"],default=None),
+    })
+    return {"timezone":"America/Managua","range":mode,"start_date":start.isoformat(),"end_date":end.isoformat(),
+            "generated_at":datetime.now(LOCAL_TZ).isoformat(),"overall":overall,"daily":daily}
 
 
 HTML = r"""
@@ -82,6 +213,18 @@ th,td{padding:9px;border-bottom:1px solid #334155;text-align:left;white-space:no
 @media(max-width:900px){.equity-chart-wrap{height:280px}}
 @media(max-width:600px){body{padding:12px}.value{font-size:24px}.equity-chart-wrap{height:220px;min-height:200px}.equity-card{padding:12px}.equity-stats{font-size:12px;gap:8px}}
 @media(max-width:380px){.equity-chart-wrap{height:190px;min-height:180px}}
+
+.report-title{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.report-title h2{margin:0;font-size:21px}.report-controls{display:flex;gap:8px;flex-wrap:wrap}
+.report-controls select,.report-controls input,.report-btn{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:8px;padding:8px 10px;font-weight:700}
+.report-btn{cursor:pointer}.report-btn:hover{background:#334155}.report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px;margin-top:14px}
+.report-metric{background:#0b1220;border:1px solid #273449;border-radius:12px;padding:12px}.report-metric .rv{font-size:21px;font-weight:700;margin-top:5px}
+.report-charts{display:grid;grid-template-columns:1.4fr .8fr;gap:12px;margin-top:14px}.report-chart-wrap{height:260px;background:#0b1220;border-radius:12px;overflow:hidden;margin-top:8px}
+.badge{display:inline-block;padding:4px 9px;border-radius:999px;font-size:12px;font-weight:700}.pos{background:#12311f;color:#86efac}.neg{background:#3a1717;color:#fca5a5}.be{background:#273449;color:#cbd5e1}.hidden{display:none!important}.print-only{display:none}
+@media(max-width:850px){.report-charts{grid-template-columns:1fr}}
+@media(max-width:600px){.report-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.report-chart-wrap{height:220px}.report-metric .rv{font-size:18px}}
+@media print{body{background:#fff;color:#111;padding:0}.wrap{max-width:none}.grid,#status,.sub,.equity-card,#openTradeCard,#tradesCard,#stateCard,.report-controls,.report-actions{display:none!important}#reportCard{background:#fff;color:#111;border:none;padding:0}.report-metric{background:#fff;border:1px solid #bbb}.muted{color:#444!important}.print-only{display:block}.report-charts{grid-template-columns:1fr 1fr}table{font-size:10px}}
+
 </style>
 </head>
 <body>
@@ -103,7 +246,7 @@ th,td{padding:9px;border-bottom:1px solid #334155;text-align:left;white-space:no
     <div class="card"><div class="muted">Última señal</div><div id="signal" class="value">HOLD</div></div>
   </div>
 
-  <div class="card" style="margin-top:16px">
+  <div class="card" id="openTradeCard" style="margin-top:16px">
     <div class="muted">Operación virtual abierta</div>
     <div id="openTrade" class="trade-grid"><div>Ninguna</div></div>
   </div>
@@ -119,7 +262,42 @@ th,td{padding:9px;border-bottom:1px solid #334155;text-align:left;white-space:no
     </div>
   </div>
 
-  <div class="card" style="margin-top:16px">
+
+  <div class="card" id="reportCard" style="margin-top:16px">
+    <div class="print-only"><h1>Reporte de simulación</h1><div id="printMeta"></div><hr></div>
+    <div class="report-title"><h2>Reporte de rendimiento</h2><div class="report-controls">
+      <select id="reportRange"><option value="today">Hoy</option><option value="7">Últimos 7 días</option><option value="15" selected>Últimos 15 días</option><option value="30">Últimos 30 días</option><option value="all">Todo</option><option value="custom">Rango personalizado</option></select>
+      <input id="reportStart" type="date" class="hidden"><input id="reportEnd" type="date" class="hidden">
+      <button class="report-btn" id="generateReport">Generar reporte</button>
+    </div></div>
+    <div class="report-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="report-btn" id="printReport">Imprimir / Guardar PDF</button><button class="report-btn" id="csvReport">Exportar CSV</button></div>
+    <div class="report-grid">
+      <div class="report-metric"><div class="muted">Periodo</div><div class="rv" id="rPeriod">-</div></div>
+      <div class="report-metric"><div class="muted">Saldo inicial</div><div class="rv" id="rStart">$0.00</div></div>
+      <div class="report-metric"><div class="muted">Saldo final</div><div class="rv" id="rEnd">$0.00</div></div>
+      <div class="report-metric"><div class="muted">Resultado neto</div><div class="rv" id="rNet">$0.00</div></div>
+      <div class="report-metric"><div class="muted">Rentabilidad</div><div class="rv" id="rReturn">0%</div></div>
+      <div class="report-metric"><div class="muted">Operaciones</div><div class="rv" id="rTrades">0</div></div>
+      <div class="report-metric"><div class="muted">Ganadas</div><div class="rv" id="rWins">0</div></div>
+      <div class="report-metric"><div class="muted">Perdidas</div><div class="rv" id="rLosses">0</div></div>
+      <div class="report-metric"><div class="muted">Win Rate</div><div class="rv" id="rWR">0%</div></div>
+      <div class="report-metric"><div class="muted">Profit Factor</div><div class="rv" id="rPF">0</div></div>
+      <div class="report-metric"><div class="muted">Ganancia bruta</div><div class="rv" id="rGP">$0</div></div>
+      <div class="report-metric"><div class="muted">Pérdida bruta</div><div class="rv" id="rGL">$0</div></div>
+      <div class="report-metric"><div class="muted">Max DD</div><div class="rv" id="rDD">0%</div></div>
+      <div class="report-metric"><div class="muted">Días positivos</div><div class="rv" id="rPos">0</div></div>
+      <div class="report-metric"><div class="muted">Días negativos</div><div class="rv" id="rNeg">0</div></div>
+      <div class="report-metric"><div class="muted">Promedio diario</div><div class="rv" id="rAvg">$0</div></div>
+      <div class="report-metric"><div class="muted">Mejor día</div><div class="rv" id="rBest">-</div></div>
+      <div class="report-metric"><div class="muted">Peor día</div><div class="rv" id="rWorst">-</div></div>
+      <div class="report-metric"><div class="muted">Racha ganadora</div><div class="rv" id="rWS">0</div></div>
+      <div class="report-metric"><div class="muted">Racha perdedora</div><div class="rv" id="rLS">0</div></div>
+    </div>
+    <div class="report-charts"><div><div class="muted">Ganancia / pérdida diaria</div><div class="report-chart-wrap"><canvas id="dailyChart"></canvas></div></div><div><div class="muted">Ganadas vs perdidas</div><div class="report-chart-wrap"><canvas id="wlChart"></canvas></div></div></div>
+    <div style="margin-top:14px"><div class="muted">Detalle diario</div><div class="scroll"><table><thead><tr><th>Fecha</th><th>Estado</th><th>Trades</th><th>Ganadas</th><th>Perdidas</th><th>WR</th><th>Gan. bruta</th><th>Pérdida</th><th>Neto</th><th>PF</th><th>Rentab.</th><th>DD</th><th>Saldo final</th></tr></thead><tbody id="dailyRows"><tr><td colspan="13">Sin datos</td></tr></tbody></table></div></div>
+  </div>
+
+  <div class="card" id="tradesCard" style="margin-top:16px">
     <div class="muted">Últimos trades cerrados</div>
     <div class="scroll">
       <table>
@@ -137,7 +315,7 @@ th,td{padding:9px;border-bottom:1px solid #334155;text-align:left;white-space:no
     </div>
   </div>
 
-  <div class="card" style="margin-top:16px">
+  <div class="card" id="stateCard" style="margin-top:16px">
     <div class="muted">Estado</div>
     <div id="updated">-</div>
     <div id="note" class="muted" style="margin-top:8px"></div>
@@ -292,6 +470,18 @@ function drawEquity(rows){
 }
 
 
+
+function reportPF(v){const n=Number(v);return v==null?'N/A':(!Number.isFinite(n)||n>=999999?'∞':n.toFixed(2))}
+function fmtDate(s){if(!s)return '-';const p=s.split('-');return `${p[2]}/${p[1]}/${p[0]}`}
+function reportQuery(){const r=document.getElementById('reportRange').value;const q=new URLSearchParams({range:r});if(r==='custom'){q.set('start',document.getElementById('reportStart').value);q.set('end',document.getElementById('reportEnd').value)}return q.toString()}
+function setupReportCanvas(id){const c=document.getElementById(id),w=c.parentElement.clientWidth,h=c.parentElement.clientHeight,d=Math.min(devicePixelRatio||1,2);c.width=w*d;c.height=h*d;c.style.width=w+'px';c.style.height=h+'px';const x=c.getContext('2d');x.setTransform(d,0,0,d,0,0);x.clearRect(0,0,w,h);return {x,w,h}}
+function drawDaily(d){const {x,w,h}=setupReportCanvas('dailyChart');if(!d.length){x.fillStyle='#94a3b8';x.fillText('Sin datos',20,30);return}const vals=d.map(v=>Number(v.net||0)),m=Math.max(1,...vals.map(Math.abs)),L=44,R=12,T=16,B=34,pw=w-L-R,ph=h-T-B,z=T+ph/2;x.strokeStyle='#334155';x.beginPath();x.moveTo(L,z);x.lineTo(L+pw,z);x.stroke();const step=pw/d.length,bw=Math.max(5,step*.62);x.font='10px Arial';x.textAlign='center';d.forEach((v,i)=>{const n=Number(v.net||0),bh=Math.abs(n)/m*(ph/2-8),xx=L+i*step+(step-bw)/2,yy=n>=0?z-bh:z;x.fillStyle=n>=0?'#22c55e':'#ef4444';x.fillRect(xx,yy,bw,bh);if(d.length<=15){x.fillStyle='#94a3b8';x.fillText(v.date.slice(5),xx+bw/2,h-12)}})}
+function drawWL(wins,losses){const {x,w,h}=setupReportCanvas('wlChart'),t=wins+losses;if(!t){x.fillStyle='#94a3b8';x.fillText('Sin datos',20,30);return}const cx=w/2,cy=h/2-4,r=Math.min(w,h)*.31,p=wins/t;let a=-Math.PI/2;x.beginPath();x.moveTo(cx,cy);x.arc(cx,cy,r,a,a+p*Math.PI*2);x.closePath();x.fillStyle='#22c55e';x.fill();a+=p*Math.PI*2;x.beginPath();x.moveTo(cx,cy);x.arc(cx,cy,r,a,a+(1-p)*Math.PI*2);x.closePath();x.fillStyle='#ef4444';x.fill();x.beginPath();x.arc(cx,cy,r*.58,0,Math.PI*2);x.fillStyle='#0b1220';x.fill();x.textAlign='center';x.fillStyle='#e2e8f0';x.font='700 22px Arial';x.fillText((p*100).toFixed(1)+'%',cx,cy);x.font='12px Arial';x.fillStyle='#94a3b8';x.fillText('Win Rate',cx,cy+19)}
+let lastReport=null;
+async function loadReport(){try{const r=await fetch('/api/report?'+reportQuery()),d=await r.json(),o=d.overall||{};lastReport=d;document.getElementById('rPeriod').textContent=`${fmtDate(d.start_date)} – ${fmtDate(d.end_date)}`;document.getElementById('rStart').textContent='$'+Number(o.start_balance||0).toFixed(2);document.getElementById('rEnd').textContent='$'+Number(o.end_balance||0).toFixed(2);document.getElementById('rNet').textContent=money(o.net);document.getElementById('rNet').className='rv '+(Number(o.net)>=0?'good':'bad');document.getElementById('rReturn').textContent=Number(o.profitability_pct||0).toFixed(2)+'%';document.getElementById('rTrades').textContent=o.total||0;document.getElementById('rWins').textContent=o.wins||0;document.getElementById('rLosses').textContent=o.losses||0;document.getElementById('rWR').textContent=Number(o.win_rate||0).toFixed(2)+'%';document.getElementById('rPF').textContent=reportPF(o.profit_factor);document.getElementById('rGP').textContent='+$'+Number(o.gross_profit||0).toFixed(2);document.getElementById('rGL').textContent='-$'+Number(o.gross_loss||0).toFixed(2);document.getElementById('rDD').textContent=Number(o.max_drawdown_pct||0).toFixed(2)+'%';document.getElementById('rPos').textContent=o.positive_days||0;document.getElementById('rNeg').textContent=o.negative_days||0;document.getElementById('rAvg').textContent=money(o.avg_daily_net||0);document.getElementById('rBest').textContent=o.best_day?fmtDate(o.best_day.date)+' '+money(o.best_day.net):'-';document.getElementById('rWorst').textContent=o.worst_day?fmtDate(o.worst_day.date)+' '+money(o.worst_day.net):'-';document.getElementById('rWS').textContent=o.max_win_streak||0;document.getElementById('rLS').textContent=o.max_loss_streak||0;const daily=d.daily||[];document.getElementById('dailyRows').innerHTML=daily.length?daily.slice().reverse().map(v=>`<tr><td>${fmtDate(v.date)}</td><td>${v.status==='positive'?'<span class="badge pos">POSITIVO</span>':v.status==='negative'?'<span class="badge neg">NEGATIVO</span>':'<span class="badge be">BREAK-EVEN</span>'}</td><td>${v.total}</td><td>${v.wins}</td><td>${v.losses}</td><td>${Number(v.win_rate).toFixed(2)}%</td><td class="good">+$${Number(v.gross_profit).toFixed(2)}</td><td class="bad">-$${Number(v.gross_loss).toFixed(2)}</td><td class="${Number(v.net)>=0?'good':'bad'}">${money(v.net)}</td><td>${reportPF(v.profit_factor)}</td><td>${Number(v.profitability_pct).toFixed(2)}%</td><td>${Number(v.max_drawdown_pct).toFixed(2)}%</td><td>$${Number(v.end_balance).toFixed(2)}</td></tr>`).join(''):'<tr><td colspan="13">Sin datos</td></tr>';drawDaily(daily);drawWL(Number(o.wins||0),Number(o.losses||0));document.getElementById('printMeta').textContent=`Periodo ${fmtDate(d.start_date)} – ${fmtDate(d.end_date)} · America/Managua`; }catch(e){console.error('Reporte',e)}}
+document.getElementById('reportRange').addEventListener('change',e=>{const c=e.target.value==='custom';document.getElementById('reportStart').classList.toggle('hidden',!c);document.getElementById('reportEnd').classList.toggle('hidden',!c)});
+document.getElementById('generateReport').addEventListener('click',loadReport);document.getElementById('printReport').addEventListener('click',()=>window.print());document.getElementById('csvReport').addEventListener('click',()=>location.href='/api/report.csv?'+reportQuery());
+
 async function refresh(){
   try{
     const [sr,tr,er]=await Promise.all([
@@ -348,10 +538,10 @@ document.getElementById('nextPage').addEventListener('click',()=>{
 
 window.addEventListener('resize',()=>{
   clearTimeout(resizeTimer);
-  resizeTimer=setTimeout(()=>drawEquity(lastEquityRows),120);
+  resizeTimer=setTimeout(()=>{drawEquity(lastEquityRows);if(lastReport){drawDaily(lastReport.daily||[]);drawWL(Number(lastReport.overall?.wins||0),Number(lastReport.overall?.losses||0));}},120);
 });
 
-refresh();setInterval(refresh,5000);
+refresh();loadReport();setInterval(refresh,5000);setInterval(loadReport,30000);
 </script>
 </body>
 </html>
@@ -417,6 +607,26 @@ def api_trades():
         "per_page": per_page,
         "total_pages": total_pages,
     })
+
+
+
+@app.route("/api/report")
+def api_report():
+    return jsonify(_build_report())
+
+
+@app.route("/api/report.csv")
+def api_report_csv():
+    report = _build_report()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Fecha","Estado","Trades","Ganadas","Perdidas","Win Rate %","Ganancia bruta","Perdida bruta","Neto","Profit Factor","Rentabilidad %","Max DD %","Saldo inicial","Saldo final"])
+    for d in report["daily"]:
+        pf = d["profit_factor"]
+        pf = "N/A" if pf is None else ("INF" if pf >= 999999 else f"{pf:.4f}")
+        w.writerow([d["date"],d["status"],d["total"],d["wins"],d["losses"],f'{d["win_rate"]:.4f}',f'{d["gross_profit"]:.4f}',f'{d["gross_loss"]:.4f}',f'{d["net"]:.4f}',pf,f'{d["profitability_pct"]:.4f}',f'{d["max_drawdown_pct"]:.4f}',f'{d["start_balance"]:.4f}',f'{d["end_balance"]:.4f}'])
+    name=f'reporte_trading_{report["start_date"]}_a_{report["end_date"]}.csv'
+    return Response(buf.getvalue(), mimetype="text/csv; charset=utf-8", headers={"Content-Disposition":f'attachment; filename="{name}"'})
 
 
 @app.route("/api/equity")
