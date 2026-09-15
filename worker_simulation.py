@@ -30,6 +30,7 @@ from indicators.atr import calculate_atr  # noqa: E402
 from strategy.registry import generate_registered_signals, validate_strategy_id  # noqa: E402
 from strategy.risk_manager import calculate_position_size, calculate_stop_take  # noqa: E402
 from strategy.strategy_engine import BUY, HOLD  # noqa: E402
+from telegram_notifier import send_pre_entry  # noqa: E402
 
 # ---------------------------------------------------------------------
 # DATOS PÚBLICOS DE MERCADO
@@ -539,6 +540,26 @@ def maybe_open_from_closed_candle(state, candles):
 
     if position_size <= 0:
         return
+
+    # TELEGRAM — PRE-ENTRADA.
+    # Usa exactamente Entry/SL/TP ya calculados por el simulador.
+    # No recalcula señales y no ejecuta operaciones.
+    trade_number = int(state.get("trades", 0)) + 1
+    signal_epoch = int(epochs[-1])
+
+    # Evita repetir la alerta para la misma vela cerrada.
+    if state.get("last_telegram_signal_epoch") != signal_epoch:
+        send_pre_entry(
+            trade_number=trade_number,
+            symbol=state.get("symbol") or SYMBOL_QUERY,
+            direction=BUY,
+            entry=entry,
+            stop=stop,
+            take=take,
+            reward_ratio=REWARD_RATIO,
+            signal_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        state["last_telegram_signal_epoch"] = signal_epoch
 
     state["open_trade"] = {
         "direction": BUY,
