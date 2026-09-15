@@ -1708,7 +1708,7 @@ document.getElementById('resetTradeFilters').addEventListener('click',()=>{
   refresh();
 });
 document.getElementById('exportTradesPdf').addEventListener('click',()=>{
-  window.open('/trades/report?'+tradeQuery(false)+'&autoprint=1','_blank','noopener');
+  window.location.assign('/trades/report?'+tradeQuery(false)+'&autoprint=1');
 });
 
 let resizeTimer=null;
