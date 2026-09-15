@@ -496,9 +496,25 @@ def maybe_open_from_closed_candle(state, candles):
     signal = signals[-1] if signals else HOLD
     state["last_signal"] = signal or HOLD
 
+    # DIAGNOSTICO: solo informa lo que decidió la estrategia.
+    # No modifica señales, entradas, riesgo, SL ni TP.
+    candle_time = datetime.fromtimestamp(int(epochs[-1]), timezone.utc).isoformat()
+    print(
+        f"[CloudSim][DIAG] vela cerrada={candle_time} | "
+        f"close={closes[-1]:.5f} | signal={signal or HOLD} | "
+        f"open_trade={'SI' if state.get('open_trade') is not None else 'NO'}",
+        flush=True,
+    )
+
     # Esta versión es LONG-only.
     if signal != BUY:
         return
+
+    print(
+        f"[CloudSim][DIAG] SENAL BUY detectada | vela={candle_time} | "
+        f"precio_senal={closes[-1]:.5f}",
+        flush=True,
+    )
 
     atr_values = calculate_atr(
         highs,
@@ -509,10 +525,20 @@ def maybe_open_from_closed_candle(state, candles):
     atr = atr_values[-1]
 
     if atr is None or atr <= 0:
+        print(
+            f"[CloudSim][DIAG] BUY descartado: ATR invalido ({atr}).",
+            flush=True,
+        )
         return
 
     if safe_float(state.get("max_drawdown_pct")) >= MAX_DRAWDOWN_STOP_PCT:
         state["note"] = "Circuit breaker virtual por drawdown máximo."
+        print(
+            f"[CloudSim][DIAG] BUY bloqueado por drawdown | "
+            f"dd={safe_float(state.get('max_drawdown_pct')):.2f}% | "
+            f"limite={MAX_DRAWDOWN_STOP_PCT:.2f}%",
+            flush=True,
+        )
         return
 
     signal_entry = closes[-1]
@@ -539,6 +565,10 @@ def maybe_open_from_closed_candle(state, candles):
     )
 
     if position_size <= 0:
+        print(
+            f"[CloudSim][DIAG] BUY descartado: position_size={position_size}.",
+            flush=True,
+        )
         return
 
     # TELEGRAM — PRE-ENTRADA.
@@ -580,6 +610,13 @@ def maybe_open_from_closed_candle(state, candles):
         "stop_atr_mult": SL_ATR_MULT,
         "reward_ratio": REWARD_RATIO,
     }
+
+    print(
+        f"[CloudSim][DIAG] OPERACION VIRTUAL ABIERTA | BUY | "
+        f"entry={entry:.5f} | SL={stop:.5f} | TP={take:.5f} | "
+        f"size={position_size:.6f}",
+        flush=True,
+    )
 
 
 def process_closed_candle(state, candles, candle):
