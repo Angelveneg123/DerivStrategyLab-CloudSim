@@ -731,6 +731,7 @@ th{color:#cbd5e1;font-size:12px}
 .be{background:#273449;color:#cbd5e1}
 .hidden{display:none!important}
 .print-only{display:none}
+.trades-print-only{display:none}
 
 @media(max-width:900px){
   .equity-chart-wrap{height:340px}
@@ -770,6 +771,105 @@ th{color:#cbd5e1;font-size:12px}
   .print-only{display:block}
   .report-charts{grid-template-columns:1fr 1fr}
   table{font-size:10px}
+
+  body.print-trades .grid,
+  body.print-trades #status,
+  body.print-trades .sub,
+  body.print-trades .equity-card,
+  body.print-trades #openTradeCard,
+  body.print-trades #reportCard,
+  body.print-trades #stateCard{display:none!important}
+  body.print-trades #tradesCard{
+    display:block!important;
+    background:#fff;
+    color:#111;
+    border:0;
+    padding:0;
+    margin:0!important;
+  }
+  body.print-trades > .wrap > h1{display:none!important}
+  body.print-trades #tradesCard .trade-header,
+  body.print-trades #tradesCard .pagination{display:none!important}
+  body.print-trades .trades-print-only{display:block!important}
+  body.print-trades .trades-print-only h1{
+    display:block!important;
+    font-size:28px;
+    margin:0 0 14px;
+  }
+  body.print-trades .trades-print-only h2{
+    font-size:24px;
+    margin:0 0 6px;
+  }
+  body.print-trades .trades-print-only hr{
+    border:0;
+    border-top:1px solid #999;
+    margin:10px 0 14px;
+  }
+  body.print-trades .trade-summary{
+    display:grid;
+    grid-template-columns:repeat(3,1fr);
+    gap:10px;
+    margin:0 0 16px;
+  }
+  body.print-trades .trade-summary span{
+    display:block;
+    background:#fff;
+    color:#111!important;
+    border:1px solid #bbb;
+    border-radius:10px;
+    padding:12px;
+    font-size:13px;
+  }
+  body.print-trades #filteredNet.good{color:#08783c!important}
+  body.print-trades #filteredNet.bad{color:#b42318!important}
+  body.print-trades #tradesCard .scroll{overflow:visible}
+  body.print-trades #tradesCard table{
+    width:100%;
+    table-layout:fixed;
+    border-collapse:collapse;
+    margin:0;
+    font-size:7px;
+  }
+  body.print-trades #tradesCard thead{display:table-header-group}
+  body.print-trades #tradesCard tr{break-inside:avoid;page-break-inside:avoid}
+  body.print-trades #tradesCard th,
+  body.print-trades #tradesCard td{
+    padding:6px 3px;
+    border-bottom:1px solid #94a3b8;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:clip;
+  }
+  body.print-trades #tradesCard th{
+    color:#6b7280;
+    font-size:7px;
+    font-weight:700;
+  }
+  body.print-trades #tradesCard th:nth-child(1),
+  body.print-trades #tradesCard td:nth-child(1),
+  body.print-trades #tradesCard th:nth-child(2),
+  body.print-trades #tradesCard td:nth-child(2){width:13%}
+  body.print-trades #tradesCard th:nth-child(3),
+  body.print-trades #tradesCard td:nth-child(3){width:5%}
+  body.print-trades #tradesCard th:nth-child(4),
+  body.print-trades #tradesCard td:nth-child(4){width:4%}
+  body.print-trades #tradesCard th:nth-child(5),
+  body.print-trades #tradesCard td:nth-child(5){width:9%}
+  body.print-trades #tradesCard th:nth-child(6),
+  body.print-trades #tradesCard td:nth-child(6),
+  body.print-trades #tradesCard th:nth-child(7),
+  body.print-trades #tradesCard td:nth-child(7){width:8%}
+  body.print-trades #tradesCard th:nth-child(8),
+  body.print-trades #tradesCard td:nth-child(8),
+  body.print-trades #tradesCard th:nth-child(9),
+  body.print-trades #tradesCard td:nth-child(9){width:9%}
+  body.print-trades #tradesCard th:nth-child(10),
+  body.print-trades #tradesCard td:nth-child(10),
+  body.print-trades #tradesCard th:nth-child(11),
+  body.print-trades #tradesCard td:nth-child(11){width:7%}
+  body.print-trades #tradesCard .good{color:#08783c!important}
+  body.print-trades #tradesCard .bad{color:#b42318!important}
+  body.print-trades #chartAttribution{display:none!important}
 }
 </style>
 </head>
@@ -939,6 +1039,12 @@ th{color:#cbd5e1;font-size:12px}
 
   <!-- TRADES -->
   <div class="card" id="tradesCard" style="margin-top:16px">
+    <div class="trades-print-only">
+      <h1>CFD Standard Simulation</h1>
+      <h2>Historial de operaciones cerradas</h2>
+      <div id="tradesPrintMeta"></div>
+      <hr>
+    </div>
     <div class="trade-header">
       <div class="muted">Historial de operaciones cerradas</div>
       <div class="trade-filters">
@@ -1039,6 +1145,12 @@ function fmtLocalDateTime(s){
 }
 function reasonLabel(v){
   return v==='take_profit'?'Take Profit':v==='stop_loss'?'Stop Loss':(v||'-');
+}
+function compactTradeDate(value){
+  if(!value)return '-';
+  const match=String(value).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if(match)return `${match[3]}/${match[2]}/${match[1]} ${match[4]}:${match[5]}`;
+  return fmtLocalDateTime(value).replace(',','').replace(/:\d{2}(?=\s|$)/,'');
 }
 function reportPF(v){
   const n=Number(v);
@@ -1559,7 +1671,10 @@ document.getElementById('reportRange').addEventListener('change',e=>{
   document.getElementById('reportEnd').classList.toggle('hidden',!c);
 });
 document.getElementById('generateReport').addEventListener('click',loadReport);
-document.getElementById('printReport').addEventListener('click',()=>window.print());
+document.getElementById('printReport').addEventListener('click',()=>{
+  document.body.classList.remove('print-trades');
+  window.print();
+});
 document.getElementById('csvReport').addEventListener('click',()=>location.href='/api/report.csv?'+reportQuery());
 
 function tradeQuery(includePage=true){
@@ -1707,8 +1822,57 @@ document.getElementById('resetTradeFilters').addEventListener('click',()=>{
   currentTradePage=1;
   refresh();
 });
-document.getElementById('exportTradesPdf').addEventListener('click',()=>{
-  window.location.assign('/trades/report?'+tradeQuery(false)+'&autoprint=1');
+document.getElementById('exportTradesPdf').addEventListener('click',async()=>{
+  const tbody=document.getElementById('tradeRows');
+  const originalRows=tbody.innerHTML;
+  const headerCells=[...document.querySelectorAll('#tradesCard thead th')];
+  const originalHeaders=headerCells.map(th=>th.textContent);
+  try{
+    const q=new URLSearchParams(tradeQuery(false));
+    q.set('page','1');
+    q.set('per_page','1000');
+    const response=await fetch('/api/trades?'+q.toString(),{cache:'no-store'});
+    const data=await response.json();
+    const rows=Array.isArray(data)?data:(data.trades||[]);
+
+    tbody.innerHTML=rows.length
+      ?rows.map(t=>`
+        <tr>
+          <td>${compactTradeDate(t.entry_time_local||t.entry_time)}</td>
+          <td>${compactTradeDate(t.exit_time_local||t.exit_time)}</td>
+          <td>${t.duration||'-'}</td>
+          <td>${t.direction||'-'}</td>
+          <td>${num(t.entry_price)}</td>
+          <td class="good">${num(t.take_price)}</td>
+          <td class="bad">${num(t.stop_price)}</td>
+          <td>${num(t.exit_price)}</td>
+          <td>${reasonLabel(t.exit_reason)}</td>
+          <td class="${Number(t.profit)>=0?'good':'bad'}">${money(t.profit)}</td>
+          <td>$${Number(t.balance_after||0).toFixed(2)}</td>
+        </tr>
+      `).join('')
+      :'<tr><td colspan="11">Sin operaciones para estos filtros</td></tr>';
+
+    const dates=rows.map(t=>t.trade_date_local).filter(Boolean).sort();
+    const period=dates.length
+      ?`${fmtDate(dates[0])} – ${fmtDate(dates[dates.length-1])}`
+      :'Sin operaciones';
+    document.getElementById('tradesPrintMeta').textContent=
+      `Periodo ${period} · America/Managua`;
+
+    ['Entrada','Salida','Dur.','Dir.','Precio entrada','TP','SL','Precio salida','Motivo','P&L','Saldo']
+      .forEach((label,index)=>{headerCells[index].textContent=label;});
+
+    document.body.classList.add('print-trades');
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    window.print();
+  }catch(error){
+    console.error('PDF del historial',error);
+  }finally{
+    document.body.classList.remove('print-trades');
+    tbody.innerHTML=originalRows;
+    originalHeaders.forEach((label,index)=>{headerCells[index].textContent=label;});
+  }
 });
 
 let resizeTimer=null;
@@ -1729,7 +1893,7 @@ setInterval(loadReport,30000);
 </script>
 
 <!-- Atribución requerida por Lightweight Charts / TradingView -->
-<div style="max-width:1450px;margin:12px auto 0;color:#64748b;font-size:11px;text-align:right">
+<div id="chartAttribution" style="max-width:1450px;margin:12px auto 0;color:#64748b;font-size:11px;text-align:right">
   Charts by TradingView Lightweight Charts
 </div>
 </body>
@@ -1912,7 +2076,7 @@ def api_trades():
     except (TypeError,ValueError):
         per_page=30
 
-    per_page=min(100,max(1,per_page))
+    per_page=min(1000,max(1,per_page))
 
     all_rows=_normalized_trades()
     start_date,end_date=_date_range(
