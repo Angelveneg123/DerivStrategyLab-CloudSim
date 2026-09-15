@@ -969,8 +969,7 @@ th{color:#cbd5e1;font-size:12px}
         </select>
         <button class="report-btn" id="applyTradeFilters" type="button">Filtrar</button>
         <button class="report-btn" id="resetTradeFilters" type="button">Limpiar</button>
-        <button class="report-btn" id="exportTradesPdf" type="button">PDF filtrado</button>
-        <button class="report-btn" id="exportTradesCsv" type="button">CSV filtrado</button>
+        <button class="report-btn" id="exportTradesPdf" type="button">Guardar PDF</button>
       </div>
     </div>
     <div class="trade-summary">
@@ -1708,9 +1707,6 @@ document.getElementById('resetTradeFilters').addEventListener('click',()=>{
   currentTradePage=1;
   refresh();
 });
-document.getElementById('exportTradesCsv').addEventListener('click',()=>{
-  location.href='/api/trades.csv?'+tradeQuery(false);
-});
 document.getElementById('exportTradesPdf').addEventListener('click',()=>{
   window.open('/trades/report?'+tradeQuery(false)+'&autoprint=1','_blank','noopener');
 });
@@ -1767,10 +1763,37 @@ TRADES_REPORT_HTML = r"""
     th{font-size:12px;color:#cbd5e1}.good{color:var(--green)}.bad{color:var(--red)}
     .empty{text-align:center;color:var(--muted);padding:30px}
     @media(max-width:600px){body{padding:12px}h1{font-size:22px}.summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @page{size:A4 landscape;margin:8mm}
     @media print{
-      body{background:#fff;color:#111;padding:0}.wrap{max-width:none}.actions{display:none}
-      .metric,.table-card{background:#fff;border-color:#aaa}.muted{color:#444}.good{color:#08783c}.bad{color:#b42318}
-      table{font-size:9px}th,td{padding:5px;border-color:#bbb}
+      html,body{width:100%;background:#fff;color:#111;padding:0;margin:0}
+      .wrap{max-width:none;width:100%;margin:0}
+      .top{margin-bottom:4mm;align-items:flex-start}
+      .actions{display:none}
+      h1{font-size:18px;margin-bottom:2mm}
+      .muted{color:#444}
+      .summary{grid-template-columns:repeat(6,1fr);gap:2.5mm;margin-bottom:4mm}
+      .metric{background:#fff;border:1px solid #aaa;border-radius:2mm;padding:2.5mm;break-inside:avoid}
+      .metric span{font-size:8px}
+      .metric strong{font-size:13px;margin-top:1mm}
+      .table-card{background:#fff;border:0;border-radius:0;padding:0}
+      .scroll{overflow:visible}
+      table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:7px;margin:0}
+      thead{display:table-header-group}
+      tr{break-inside:avoid;page-break-inside:avoid}
+      th,td{padding:1.35mm .8mm;border-bottom:1px solid #bbb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      th{font-size:6.8px;background:#eef2f7;color:#111}
+      th:nth-child(1),td:nth-child(1){width:12%}
+      th:nth-child(2),td:nth-child(2){width:12%}
+      th:nth-child(3),td:nth-child(3){width:6%}
+      th:nth-child(4),td:nth-child(4){width:4%}
+      th:nth-child(5),td:nth-child(5){width:10%}
+      th:nth-child(6),td:nth-child(6){width:9%}
+      th:nth-child(7),td:nth-child(7){width:9%}
+      th:nth-child(8),td:nth-child(8){width:10%}
+      th:nth-child(9),td:nth-child(9){width:9%}
+      th:nth-child(10),td:nth-child(10){width:8%}
+      th:nth-child(11),td:nth-child(11){width:8%}
+      .good{color:#08783c}.bad{color:#b42318}
     }
   </style>
 </head>
@@ -1782,8 +1805,7 @@ TRADES_REPORT_HTML = r"""
       <div class="muted">{{ report.start_date }} al {{ report.end_date }} · horario America/Managua</div>
     </div>
     <div class="actions">
-      <button class="btn" onclick="window.print()">Imprimir / Guardar PDF</button>
-      <a class="btn" href="/api/trades.csv{% if query_string %}?{{ query_string }}{% endif %}">Descargar CSV</a>
+      <button class="btn" onclick="window.print()">Guardar PDF</button>
       <a class="btn" href="/">Volver al dashboard</a>
     </div>
   </div>
