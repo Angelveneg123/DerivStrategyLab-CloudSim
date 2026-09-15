@@ -83,9 +83,80 @@ def _normalized_trades():
         t["_date"] = dt.date().isoformat()
         t["_p"] = _f(raw.get("profit"))
         t["_bal"] = _f(raw.get("balance_after"))
+        t["_entry_dt"] = _local_dt(raw.get("entry_time"))
+        if t["_entry_dt"]:
+            t["_duration_seconds"] = max(0, int((dt - t["_entry_dt"]).total_seconds()))
+        else:
+            t["_duration_seconds"] = None
         rows.append(t)
     rows.sort(key=lambda x: x["_dt"])
     return rows
+
+
+def _duration_text(seconds):
+    if seconds is None:
+        return "-"
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _public_trade(t):
+    """Devuelve un trade listo para API, tabla y exportaciones."""
+    row = {k: v for k, v in t.items() if not k.startswith("_")}
+    row["entry_time_local"] = (
+        t["_entry_dt"].strftime("%Y-%m-%d %H:%M:%S") if t.get("_entry_dt") else None
+    )
+    row["exit_time_local"] = t["_dt"].strftime("%Y-%m-%d %H:%M:%S")
+    row["trade_date_local"] = t["_date"]
+    row["duration_seconds"] = t.get("_duration_seconds")
+    row["duration"] = _duration_text(t.get("_duration_seconds"))
+    return row
+
+
+def _filter_trade_rows(trades, start=None, end=None, reason="all", direction="all", outcome="all"):
+    rows = trades
+    if start:
+        rows = [t for t in rows if t["_dt"].date() >= start]
+    if end:
+        rows = [t for t in rows if t["_dt"].date() <= end]
+
+    reason = (reason or "all").lower()
+    direction = (direction or "all").upper()
+    outcome = (outcome or "all").lower()
+
+    if reason != "all":
+        rows = [t for t in rows if str(t.get("exit_reason", "")).lower() == reason]
+    if direction != "ALL":
+        rows = [t for t in rows if str(t.get("direction", "")).upper() == direction]
+    if outcome == "win":
+        rows = [t for t in rows if t["_p"] > 0]
+    elif outcome == "loss":
+        rows = [t for t in rows if t["_p"] < 0]
+
+    return rows
+
+
+def _date_range(mode, trades, start_arg="", end_arg=""):
+    today = datetime.now(LOCAL_TZ).date()
+    mode = (mode or "all").lower()
+    if mode == "today":
+        return today, today
+    if mode in {"7", "15", "30"}:
+        return today - timedelta(days=int(mode) - 1), today
+    if mode == "custom":
+        try:
+            start = datetime.strptime(start_arg, "%Y-%m-%d").date()
+            end = datetime.strptime(end_arg, "%Y-%m-%d").date()
+        except Exception:
+            return today, today
+        return (end, start) if start > end else (start, end)
+
+    dates = [t["_dt"].date() for t in trades]
+    return (min(dates), max(dates)) if dates else (today, today)
 
 
 def _pf(gp, gl):
@@ -151,28 +222,21 @@ def _stats(trades):
 
 def _build_report():
     trades = _normalized_trades()
-    today = datetime.now(LOCAL_TZ).date()
     mode = (request.args.get("range") or "15").lower()
-
-    if mode == "today":
-        start = end = today
-    elif mode in {"7", "15", "30"}:
-        end = today
-        start = today - timedelta(days=int(mode) - 1)
-    elif mode == "custom":
-        try:
-            start = datetime.strptime(request.args.get("start", ""), "%Y-%m-%d").date()
-            end = datetime.strptime(request.args.get("end", ""), "%Y-%m-%d").date()
-        except Exception:
-            start = end = today
-        if start > end:
-            start, end = end, start
-    else:
-        dates = [t["_dt"].date() for t in trades]
-        start = min(dates) if dates else today
-        end = max(dates) if dates else today
-
-    filt = [t for t in trades if start <= t["_dt"].date() <= end]
+    start, end = _date_range(
+        mode,
+        trades,
+        request.args.get("start", ""),
+        request.args.get("end", ""),
+    )
+    filt = _filter_trade_rows(
+        trades,
+        start,
+        end,
+        request.args.get("reason", "all"),
+        request.args.get("direction", "all"),
+        request.args.get("outcome", "all"),
+    )
 
     by = {}
     for t in filt:
@@ -203,6 +267,7 @@ def _build_report():
         "generated_at": datetime.now(LOCAL_TZ).isoformat(),
         "overall": overall,
         "daily": daily,
+        "trades": [_public_trade(t) for t in reversed(filt)],
     }
 
 
@@ -538,6 +603,42 @@ th{color:#cbd5e1;font-size:12px}
 .page-btn:hover:not(:disabled),.report-btn:hover{background:#334155}
 .page-btn:disabled{opacity:.45;cursor:not-allowed}
 .page-number{min-width:110px;text-align:center;color:#cbd5e1;font-size:14px}
+.trade-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+  flex-wrap:wrap;
+}
+.trade-filters{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  align-items:center;
+}
+.trade-filters select,.trade-filters input{
+  background:#1e293b;
+  color:var(--text);
+  border:1px solid #475569;
+  border-radius:8px;
+  padding:8px 10px;
+  font-weight:700;
+}
+.trade-summary{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin:12px 0 4px;
+}
+.trade-summary span{
+  background:var(--panel2);
+  border:1px solid var(--line);
+  border-radius:999px;
+  padding:6px 10px;
+  color:#cbd5e1;
+  font-size:12px;
+  font-weight:700;
+}
 
 /* REPORT */
 .report-title{
@@ -633,7 +734,9 @@ th{color:#cbd5e1;font-size:12px}
   .muted{color:#444!important}
   .print-only{display:block}
   .report-charts{grid-template-columns:1fr 1fr}
-  table{font-size:10px}
+  table{font-size:9px}
+  th,td{padding:5px}
+  .report-trade-detail{display:block!important;page-break-before:always}
 }
 </style>
 </head>
@@ -741,13 +844,29 @@ th{color:#cbd5e1;font-size:12px}
         </select>
         <input id="reportStart" type="date" class="hidden">
         <input id="reportEnd" type="date" class="hidden">
+        <select id="reportReason">
+          <option value="all">TP y SL</option>
+          <option value="take_profit">Solo Take Profit</option>
+          <option value="stop_loss">Solo Stop Loss</option>
+        </select>
+        <select id="reportDirection">
+          <option value="all">BUY y SELL</option>
+          <option value="BUY">Solo BUY</option>
+          <option value="SELL">Solo SELL</option>
+        </select>
+        <select id="reportOutcome">
+          <option value="all">Ganadas y perdidas</option>
+          <option value="win">Solo ganadas</option>
+          <option value="loss">Solo perdidas</option>
+        </select>
         <button class="report-btn" id="generateReport">Generar reporte</button>
       </div>
     </div>
 
     <div class="report-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
       <button class="report-btn" id="printReport">Imprimir / Guardar PDF</button>
-      <button class="report-btn" id="csvReport">Exportar CSV</button>
+      <button class="report-btn" id="csvReport">CSV resumen diario</button>
+      <button class="report-btn" id="csvReportTrades">CSV operaciones</button>
     </div>
 
     <div class="report-grid">
@@ -799,17 +918,76 @@ th{color:#cbd5e1;font-size:12px}
         </table>
       </div>
     </div>
+
+    <div class="report-trade-detail" style="margin-top:18px">
+      <div class="muted">Operaciones incluidas en el reporte</div>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Entrada (Managua)</th><th>Salida (Managua)</th><th>Duración</th><th>Dir.</th>
+              <th>Precio entrada</th><th>Take Profit</th><th>Stop Loss</th><th>Precio salida</th>
+              <th>Motivo</th><th>P&amp;L</th><th>Saldo</th>
+            </tr>
+          </thead>
+          <tbody id="reportTradeRows"><tr><td colspan="11">Sin operaciones</td></tr></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- TRADES -->
   <div class="card" id="tradesCard" style="margin-top:16px">
-    <div class="muted">Últimos trades cerrados</div>
+    <div class="trade-header">
+      <div class="muted">Historial de operaciones cerradas</div>
+      <div class="trade-filters">
+        <select id="tradeRange">
+          <option value="today">Hoy</option>
+          <option value="7">Últimos 7 días</option>
+          <option value="15">Últimos 15 días</option>
+          <option value="30">Últimos 30 días</option>
+          <option value="all" selected>Todo</option>
+          <option value="custom">Rango personalizado</option>
+        </select>
+        <input id="tradeStart" type="date" class="hidden">
+        <input id="tradeEnd" type="date" class="hidden">
+        <select id="tradeReason">
+          <option value="all">TP y SL</option>
+          <option value="take_profit">Take Profit</option>
+          <option value="stop_loss">Stop Loss</option>
+        </select>
+        <select id="tradeDirection">
+          <option value="all">BUY y SELL</option>
+          <option value="BUY">BUY</option>
+          <option value="SELL">SELL</option>
+        </select>
+        <select id="tradeOutcome">
+          <option value="all">Todos</option>
+          <option value="win">Ganadores</option>
+          <option value="loss">Perdedores</option>
+        </select>
+        <button class="report-btn" id="applyTradeFilters" type="button">Filtrar</button>
+        <button class="report-btn" id="resetTradeFilters" type="button">Limpiar</button>
+        <button class="report-btn" id="exportTradesCsv" type="button">CSV filtrado</button>
+      </div>
+    </div>
+    <div class="trade-summary">
+      <span id="filteredTrades">0 trades</span>
+      <span id="filteredWins">0 ganados</span>
+      <span id="filteredLosses">0 perdidos</span>
+      <span id="filteredWR">WR 0%</span>
+      <span id="filteredNet">Neto $0.00</span>
+    </div>
     <div class="scroll">
       <table>
         <thead>
-          <tr><th>Hora UTC</th><th>Dir.</th><th>Entrada</th><th>Salida</th><th>Motivo</th><th>P&L</th><th>Saldo</th></tr>
+          <tr>
+            <th>Entrada (Managua)</th><th>Salida (Managua)</th><th>Duración</th><th>Dir.</th>
+            <th>Precio entrada</th><th>Take Profit</th><th>Stop Loss</th><th>Precio salida</th>
+            <th>Motivo</th><th>P&amp;L</th><th>Saldo</th>
+          </tr>
         </thead>
-        <tbody id="tradeRows"><tr><td colspan="7">Sin trades todavía</td></tr></tbody>
+        <tbody id="tradeRows"><tr><td colspan="11">Sin trades todavía</td></tr></tbody>
       </table>
     </div>
 
@@ -848,6 +1026,18 @@ function fmtDate(s){
   if(!s)return '-';
   const p=s.split('-');
   return `${p[2]}/${p[1]}/${p[0]}`;
+}
+function fmtLocalDateTime(s){
+  if(!s)return '-';
+  const d=new Date(s);
+  if(Number.isNaN(d.getTime()))return s;
+  return d.toLocaleString('es-NI',{
+    timeZone:'America/Managua',year:'numeric',month:'2-digit',day:'2-digit',
+    hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false
+  });
+}
+function reasonLabel(v){
+  return v==='take_profit'?'Take Profit':v==='stop_loss'?'Stop Loss':(v||'-');
 }
 function reportPF(v){
   const n=Number(v);
@@ -1189,7 +1379,12 @@ document.querySelectorAll('.eq-range').forEach(btn=>{
    ========================= */
 function reportQuery(){
   const r=document.getElementById('reportRange').value;
-  const q=new URLSearchParams({range:r});
+  const q=new URLSearchParams({
+    range:r,
+    reason:document.getElementById('reportReason').value,
+    direction:document.getElementById('reportDirection').value,
+    outcome:document.getElementById('reportOutcome').value
+  });
   if(r==='custom'){
     q.set('start',document.getElementById('reportStart').value);
     q.set('end',document.getElementById('reportEnd').value);
@@ -1352,6 +1547,25 @@ async function loadReport(){
       `).join('')
       :'<tr><td colspan="13">Sin datos</td></tr>';
 
+    const reportTrades=d.trades||[];
+    document.getElementById('reportTradeRows').innerHTML=reportTrades.length
+      ?reportTrades.map(t=>`
+        <tr>
+          <td>${t.entry_time_local||fmtLocalDateTime(t.entry_time)}</td>
+          <td>${t.exit_time_local||fmtLocalDateTime(t.exit_time)}</td>
+          <td>${t.duration||'-'}</td>
+          <td>${t.direction||'-'}</td>
+          <td>${num(t.entry_price)}</td>
+          <td class="good">${num(t.take_price)}</td>
+          <td class="bad">${num(t.stop_price)}</td>
+          <td>${num(t.exit_price)}</td>
+          <td>${reasonLabel(t.exit_reason)}</td>
+          <td class="${Number(t.profit)>=0?'good':'bad'}">${money(t.profit)}</td>
+          <td>$${Number(t.balance_after||0).toFixed(2)}</td>
+        </tr>
+      `).join('')
+      :'<tr><td colspan="11">Sin operaciones</td></tr>';
+
     drawDaily(daily);
     drawWL(Number(o.wins||0),Number(o.losses||0));
     document.getElementById('printMeta').textContent=
@@ -1370,6 +1584,26 @@ document.getElementById('reportRange').addEventListener('change',e=>{
 document.getElementById('generateReport').addEventListener('click',loadReport);
 document.getElementById('printReport').addEventListener('click',()=>window.print());
 document.getElementById('csvReport').addEventListener('click',()=>location.href='/api/report.csv?'+reportQuery());
+document.getElementById('csvReportTrades').addEventListener('click',()=>location.href='/api/trades.csv?'+reportQuery());
+
+function tradeQuery(includePage=true){
+  const range=document.getElementById('tradeRange').value;
+  const q=new URLSearchParams({
+    range,
+    reason:document.getElementById('tradeReason').value,
+    direction:document.getElementById('tradeDirection').value,
+    outcome:document.getElementById('tradeOutcome').value
+  });
+  if(range==='custom'){
+    q.set('start',document.getElementById('tradeStart').value);
+    q.set('end',document.getElementById('tradeEnd').value);
+  }
+  if(includePage){
+    q.set('page',currentTradePage);
+    q.set('per_page',TRADES_PER_PAGE);
+  }
+  return q.toString();
+}
 
 /* =========================
    ACTUALIZACIÓN PRINCIPAL
@@ -1378,7 +1612,7 @@ async function refresh(){
   try{
     const [sr,tr,er]=await Promise.all([
       fetch('/api/state',{cache:'no-store'}),
-      fetch(`/api/trades?page=${currentTradePage}&per_page=${TRADES_PER_PAGE}`,{cache:'no-store'}),
+      fetch('/api/trades?'+tradeQuery(true),{cache:'no-store'}),
       fetch('/api/equity',{cache:'no-store'})
     ]);
 
@@ -1388,6 +1622,13 @@ async function refresh(){
 
     const trades=Array.isArray(tradeData)?tradeData:(tradeData.trades||[]);
     if(!Array.isArray(tradeData))updatePagination(tradeData);
+    const fs=tradeData.summary||{};
+    document.getElementById('filteredTrades').textContent=`${fs.total||0} trades`;
+    document.getElementById('filteredWins').textContent=`${fs.wins||0} ganados`;
+    document.getElementById('filteredLosses').textContent=`${fs.losses||0} perdidos`;
+    document.getElementById('filteredWR').textContent=`WR ${Number(fs.win_rate||0).toFixed(2)}%`;
+    document.getElementById('filteredNet').textContent=`Neto ${money(fs.net||0)}`;
+    document.getElementById('filteredNet').className=Number(fs.net||0)>=0?'good':'bad';
 
     document.getElementById('status').textContent=s.running?'● SIMULADOR ACTIVO':'● RECONECTANDO';
     document.getElementById('subtitle').textContent=
@@ -1415,6 +1656,7 @@ async function refresh(){
     const p=s.open_trade;
     document.getElementById('openTrade').innerHTML=p
       ?card('Dirección',p.direction)
+        +card('Hora de entrada',fmtLocalDateTime(p.entry_time))
         +card('Entrada',num(p.entry_price))
         +card('SL',num(p.stop_price))
         +card('TP',num(p.take_price))
@@ -1426,16 +1668,20 @@ async function refresh(){
     tbody.innerHTML=trades.length
       ?trades.map(t=>`
         <tr>
-          <td>${t.exit_time||'-'}</td>
+          <td>${t.entry_time_local||fmtLocalDateTime(t.entry_time)}</td>
+          <td>${t.exit_time_local||fmtLocalDateTime(t.exit_time)}</td>
+          <td>${t.duration||'-'}</td>
           <td>${t.direction||'-'}</td>
           <td>${num(t.entry_price)}</td>
+          <td class="good">${num(t.take_price)}</td>
+          <td class="bad">${num(t.stop_price)}</td>
           <td>${num(t.exit_price)}</td>
-          <td>${t.exit_reason||'-'}</td>
+          <td>${reasonLabel(t.exit_reason)}</td>
           <td class="${Number(t.profit)>=0?'good':'bad'}">${money(t.profit)}</td>
           <td>$${Number(t.balance_after||0).toFixed(2)}</td>
         </tr>
       `).join('')
-      :'<tr><td colspan="7">Sin trades todavía</td></tr>';
+      :'<tr><td colspan="11">Sin trades para estos filtros</td></tr>';
 
     drawEquity(equityData);
 
@@ -1464,6 +1710,29 @@ document.getElementById('nextPage').addEventListener('click',()=>{
     currentTradePage++;
     refresh();
   }
+});
+
+document.getElementById('tradeRange').addEventListener('change',e=>{
+  const custom=e.target.value==='custom';
+  document.getElementById('tradeStart').classList.toggle('hidden',!custom);
+  document.getElementById('tradeEnd').classList.toggle('hidden',!custom);
+});
+document.getElementById('applyTradeFilters').addEventListener('click',()=>{
+  currentTradePage=1;
+  refresh();
+});
+document.getElementById('resetTradeFilters').addEventListener('click',()=>{
+  document.getElementById('tradeRange').value='all';
+  document.getElementById('tradeReason').value='all';
+  document.getElementById('tradeDirection').value='all';
+  document.getElementById('tradeOutcome').value='all';
+  document.getElementById('tradeStart').classList.add('hidden');
+  document.getElementById('tradeEnd').classList.add('hidden');
+  currentTradePage=1;
+  refresh();
+});
+document.getElementById('exportTradesCsv').addEventListener('click',()=>{
+  location.href='/api/trades.csv?'+tradeQuery(false);
 });
 
 let resizeTimer=null;
@@ -1528,7 +1797,7 @@ def api_state():
 @app.route("/api/trades")
 def api_trades():
     if "page" not in request.args and "per_page" not in request.args:
-        return jsonify(read_jsonl(TRADES_FILE, limit=30))
+        return jsonify([_public_trade(t) for t in reversed(_normalized_trades()[-30:])])
 
     try:
         page=max(1,int(request.args.get("page",1)))
@@ -1542,13 +1811,29 @@ def api_trades():
 
     per_page=min(100,max(1,per_page))
 
-    rows=list(reversed(read_all_jsonl(TRADES_FILE)))
+    all_rows=_normalized_trades()
+    start_date,end_date=_date_range(
+        request.args.get("range","all"),
+        all_rows,
+        request.args.get("start",""),
+        request.args.get("end",""),
+    )
+    filtered=_filter_trade_rows(
+        all_rows,
+        start_date,
+        end_date,
+        request.args.get("reason","all"),
+        request.args.get("direction","all"),
+        request.args.get("outcome","all"),
+    )
+    summary=_stats(filtered)
+    rows=list(reversed(filtered))
     total=len(rows)
     total_pages=max(1,(total+per_page-1)//per_page)
     page=min(page,total_pages)
 
     start=(page-1)*per_page
-    page_rows=rows[start:start+per_page]
+    page_rows=[_public_trade(t) for t in rows[start:start+per_page]]
 
     return jsonify({
         "trades":page_rows,
@@ -1556,6 +1841,7 @@ def api_trades():
         "page":page,
         "per_page":per_page,
         "total_pages":total_pages,
+        "summary":summary,
     })
 
 
@@ -1579,23 +1865,45 @@ def api_report_csv():
     for d in report["daily"]:
         pf=d["profit_factor"]
         pf="N/A" if pf is None else ("INF" if pf>=999999 else f"{pf:.4f}")
-
         w.writerow([
             d["date"],d["status"],d["total"],d["wins"],d["losses"],
-            f'{d["win_rate"]:.4f}',
-            f'{d["gross_profit"]:.4f}',
-            f'{d["gross_loss"]:.4f}',
-            f'{d["net"]:.4f}',
-            pf,
-            f'{d["profitability_pct"]:.4f}',
-            f'{d["max_drawdown_pct"]:.4f}',
-            f'{d["start_balance"]:.4f}',
-            f'{d["end_balance"]:.4f}',
+            f'{d["win_rate"]:.4f}',f'{d["gross_profit"]:.4f}',
+            f'{d["gross_loss"]:.4f}',f'{d["net"]:.4f}',pf,
+            f'{d["profitability_pct"]:.4f}',f'{d["max_drawdown_pct"]:.4f}',
+            f'{d["start_balance"]:.4f}',f'{d["end_balance"]:.4f}',
         ])
 
     name=f'reporte_trading_{report["start_date"]}_a_{report["end_date"]}.csv'
     return Response(
-        buf.getvalue(),
+        "\ufeff"+buf.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition":f'attachment; filename="{name}"'}
+    )
+
+
+@app.route("/api/trades.csv")
+def api_trades_csv():
+    """CSV del historial aplicando exactamente los filtros de la tabla."""
+    report=_build_report()
+    buf=io.StringIO()
+    w=csv.writer(buf)
+    w.writerow([
+        "Fecha","Hora entrada Managua","Hora salida Managua","Duracion",
+        "Direccion","Precio entrada","Take Profit","Stop Loss","Precio salida",
+        "Motivo salida","Ganancia/Perdida","Saldo final"
+    ])
+    for t in reversed(report["trades"]):
+        w.writerow([
+            t.get("trade_date_local", ""),t.get("entry_time_local", ""),
+            t.get("exit_time_local", ""),t.get("duration", ""),
+            t.get("direction", ""),f'{_f(t.get("entry_price")):.5f}',
+            f'{_f(t.get("take_price")):.5f}',f'{_f(t.get("stop_price")):.5f}',
+            f'{_f(t.get("exit_price")):.5f}',t.get("exit_reason", ""),
+            f'{_f(t.get("profit")):.4f}',f'{_f(t.get("balance_after")):.4f}',
+        ])
+    name=f'operaciones_{report["start_date"]}_a_{report["end_date"]}.csv'
+    return Response(
+        "\ufeff"+buf.getvalue(),
         mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition":f'attachment; filename="{name}"'}
     )
