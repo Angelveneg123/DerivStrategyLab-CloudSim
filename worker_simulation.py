@@ -46,7 +46,7 @@ DERIV_WS = os.getenv(
 # La fuente de precios es pública; la contabilidad de la operación se hace
 # localmente. No hay llamadas de compra/venta.
 # ---------------------------------------------------------------------
-SYMBOL_QUERY = os.getenv("SIM_SYMBOL", "Crash 500 Index")
+SYMBOL_QUERY = os.getenv("SIM_SYMBOL", os.getenv("SIM_SYMBOL_QUERY", "Crash 500 Index"))
 STRATEGY = os.getenv("SIM_STRATEGY", "hybrid_long_only")
 GRANULARITY = int(os.getenv("SIM_GRANULARITY", "60"))
 START_BALANCE = float(os.getenv("SIM_START_BALANCE", "100"))
@@ -85,13 +85,15 @@ def load_state():
     if STATE_FILE.exists():
         try:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if state.get("symbol_code") and str(state.get("symbol_code")).lower() not in {SYMBOL_QUERY.lower(), SYMBOL_QUERY.lower().replace(" index", "").replace(" ", "")}:
+                raise RuntimeError("El estado guardado pertenece a otro indice; no se reutilizara.")
             state["running"] = True
             state["storage_path"] = str(DATA_ROOT)
             state["mode"] = "CFD_STANDARD_SIMULATION"
             state["execution"] = "VIRTUAL_ONLY"
             return state
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(f"No se puede cargar el estado guardado: {exc}") from exc
 
     return {
         "mode": "CFD_STANDARD_SIMULATION",
@@ -186,41 +188,6 @@ def resolve_symbol(ws):
             or ""
         ).strip()
         if q in {code.lower(), name.lower()}:
-            return code, name or code
-
-    # Fallback robusto para Crash 500.
-    candidates = []
-    for item in symbols:
-        code = str(
-            item.get("underlying_symbol")
-            or item.get("symbol")
-            or ""
-        ).strip()
-        name = str(
-            item.get("underlying_symbol_name")
-            or item.get("display_name")
-            or ""
-        ).strip()
-        haystack = f"{code} {name}".lower()
-        if "crash" in haystack and "500" in haystack:
-            candidates.append((code, name or code))
-
-    if candidates:
-        return candidates[0]
-
-    # Algunos catálogos pueden exponer solamente el código.
-    for item in symbols:
-        code = str(
-            item.get("underlying_symbol")
-            or item.get("symbol")
-            or ""
-        ).strip()
-        name = str(
-            item.get("underlying_symbol_name")
-            or item.get("display_name")
-            or ""
-        ).strip()
-        if "500" in code.lower() and ("crash" in code.lower() or "boom" not in code.lower()):
             return code, name or code
 
     raise RuntimeError(
@@ -375,7 +342,7 @@ def close_trade(state, exit_price, exit_epoch, reason):
     if reason == "take_profit":
         executed_exit = max(1e-12, exit_price - exit_slippage)
     else:
-        executed_exit = exit_price + exit_slippage
+        executed_exit = max(1e-12, exit_price - exit_slippage)
 
     if direction == BUY:
         gross = (executed_exit - entry) * units
@@ -467,7 +434,7 @@ def maybe_exit_on_tick(state, price, epoch):
 
     if direction == BUY:
         if price <= stop:
-            close_trade(state, stop, epoch, "stop_loss")
+            close_trade(state, min(stop, price), epoch, "stop_loss")
         elif price >= take:
             close_trade(state, take, epoch, "take_profit")
     else:
@@ -591,7 +558,9 @@ def maybe_open_from_closed_candle(state, candles):
         )
         state["last_telegram_signal_epoch"] = signal_epoch
 
+    state["last_entry_signal_epoch"] = signal_epoch
     state["open_trade"] = {
+        "execution_model_version": "2_adverse_stop_slippage",
         "direction": BUY,
         "market_model": "CFD_STANDARD_VIRTUAL",
         "signal_entry_price": signal_entry,
@@ -675,8 +644,9 @@ def run_session(state):
         if state.get("last_closed_candle_epoch") is None:
             state["last_closed_candle_epoch"] = last_epoch
 
-        # Calcula la señal inicial sobre histórico cerrado.
-        maybe_open_from_closed_candle(state, candles)
+        # No repetir una entrada sobre la misma vela tras una reconexion.
+        if state.get("last_entry_signal_epoch") != last_epoch:
+            maybe_open_from_closed_candle(state, candles)
 
         ws.send(
             json.dumps(
@@ -693,7 +663,7 @@ def run_session(state):
         while True:
             raw = ws.recv()
             if not raw:
-                continue
+                raise ConnectionError("WebSocket cerrado sin datos.")
 
             msg = json.loads(raw)
 
@@ -799,3 +769,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
