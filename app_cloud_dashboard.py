@@ -2053,7 +2053,16 @@ def api_state():
         })
 
     try:
-        return jsonify(json.loads(STATE_FILE.read_text(encoding="utf-8")))
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        updated = datetime.fromisoformat(state.get("updated_at") or "")
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=UTC_TZ)
+        age = max(0, (datetime.now(UTC_TZ) - updated).total_seconds())
+        state["data_age_seconds"] = round(age, 1)
+        if age > 90:
+            state["running"] = False
+            state["note"] = "Datos atrasados; esperando recuperacion del worker."
+        return jsonify(state)
     except Exception as e:
         return jsonify({
             "running": False,
@@ -2190,3 +2199,4 @@ def api_equity():
 if __name__=="__main__":
     port=int(os.environ.get("PORT","8000"))
     app.run(host="0.0.0.0",port=port)
+
