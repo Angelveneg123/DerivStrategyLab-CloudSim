@@ -1,5 +1,4 @@
 #!/bin/sh
 set -e
+exec python cloud_supervisor.py
 
-python worker_keepalive.py &
-exec python app_cloud_dashboard.py
