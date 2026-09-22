@@ -48,7 +48,7 @@ def generate_hybrid_signals(
         rupturas_por_index.setdefault(r["index"], []).append(r)
 
     n = len(closes)
-    signals = [HOLD] * n  # Mejora 3: Inicializados todos en HOLD por defecto
+    signals = [HOLD] * n
 
     # Puntero para recorrer la temporalidad superior
     idx_htf = 0
@@ -61,14 +61,14 @@ def generate_hybrid_signals(
                 sesgo_vigente = sesgos_htf[idx_htf]
             idx_htf += 1
 
-        # Mejora 4: Descarte rápido si no hay RSI calculado aún
+        # Descarte rápido si no hay RSI calculado aún
         if rsi[i] is None:
             continue
 
-        # Mejora 2: Obtener rupturas de la vela actual una sola vez
+        # Obtener rupturas de la vela actual una sola vez
         rupturas_aqui = rupturas_por_index.get(i, [])
 
-        # Mejora 5: Calcular presencia de BOS antes de evaluar la dirección
+        # Calcular presencia de BOS antes de evaluar la dirección
         hay_bos_alcista = any(
             r["tipo"] == "BOS" and r["direccion"] == "alcista" for r in rupturas_aqui
         )
@@ -78,16 +78,12 @@ def generate_hybrid_signals(
 
         # Cerebro de la Estrategia (Lógica de decisión)
         if sesgo_vigente == ALCISTA:
-            # Mejora 1: Rango de RSI delimitado para Compra
             if rsi_min_compra < rsi[i] < rsi_max_compra and hay_bos_alcista:
                 signals[i] = BUY
 
         elif sesgo_vigente == BAJISTA:
-            # Mejora 1: Rango de RSI delimitado para Venta
             if rsi_min_venta < rsi[i] < rsi_max_venta and hay_bos_bajista:
                 signals[i] = SELL
-
-        # Mejora 3: Se eliminó el 'else: signals[i] = HOLD' redundante
 
     if diagnostico:
         print("--- DIAGNÓSTICO DE SEÑALES ---")
@@ -98,3 +94,114 @@ def generate_hybrid_signals(
         print("-------------------------------")
 
     return signals
+
+
+def diagnosticar_hybrid_ultima_vela(
+    epochs,
+    highs,
+    lows,
+    closes,
+    epochs_htf,
+    highs_htf,
+    lows_htf,
+    closes_htf,
+    rsi_period=14,
+    rsi_min_compra=35,
+    rsi_max_compra=65,
+    rsi_min_venta=35,
+    rsi_max_venta=65,
+    structure_lookback=3,
+    adx_minimo_htf=25,
+):
+    """Diagnóstico de solo lectura para la última vela.
+
+    Usa exactamente los mismos componentes de la estrategia Hybrid para
+    explicar por qué la última vela termina en BUY, SELL o HOLD.
+
+    IMPORTANTE: esta función NO modifica señales, riesgo, SL, TP, balance,
+    historial ni estado del simulador. Solo devuelve información diagnóstica.
+    """
+    if not epochs or not closes:
+        return {
+            "raw_signal": HOLD,
+            "htf_bias": None,
+            "rsi": None,
+            "bos_bull": False,
+            "bos_bear": False,
+            "reason": "sin_datos",
+        }
+
+    sesgos_htf = determinar_sesgo(
+        highs_htf,
+        lows_htf,
+        closes_htf,
+        adx_minimo=adx_minimo_htf,
+    )
+    estructura = analizar_estructura(
+        highs,
+        lows,
+        closes,
+        lookback=structure_lookback,
+    )
+    rsi = calculate_rsi(closes, period=rsi_period)
+
+    i = len(closes) - 1
+    epoch_actual = epochs[i]
+
+    # Reproduce exactamente la lógica de sesgo vigente usada por Hybrid.
+    sesgo_vigente = None
+    for epoch_htf, sesgo in zip(epochs_htf, sesgos_htf):
+        if epoch_htf > epoch_actual:
+            break
+        if sesgo is not None:
+            sesgo_vigente = sesgo
+
+    rupturas_aqui = [
+        r for r in estructura["rupturas"]
+        if r.get("index") == i
+    ]
+
+    hay_bos_alcista = any(
+        r.get("tipo") == "BOS" and r.get("direccion") == "alcista"
+        for r in rupturas_aqui
+    )
+    hay_bos_bajista = any(
+        r.get("tipo") == "BOS" and r.get("direccion") == "bajista"
+        for r in rupturas_aqui
+    )
+
+    rsi_actual = rsi[i] if i < len(rsi) else None
+    raw_signal = HOLD
+
+    if rsi_actual is None:
+        reason = "rsi_no_disponible"
+
+    elif sesgo_vigente == ALCISTA:
+        if not (rsi_min_compra < rsi_actual < rsi_max_compra):
+            reason = "rsi_fuera_rango_compra"
+        elif not hay_bos_alcista:
+            reason = "sin_bos_alcista"
+        else:
+            raw_signal = BUY
+            reason = "buy_valido"
+
+    elif sesgo_vigente == BAJISTA:
+        if not (rsi_min_venta < rsi_actual < rsi_max_venta):
+            reason = "rsi_fuera_rango_venta"
+        elif not hay_bos_bajista:
+            reason = "sin_bos_bajista"
+        else:
+            raw_signal = SELL
+            reason = "sell_valido"
+
+    else:
+        reason = "sesgo_htf_neutral_o_no_disponible"
+
+    return {
+        "raw_signal": raw_signal,
+        "htf_bias": sesgo_vigente,
+        "rsi": rsi_actual,
+        "bos_bull": hay_bos_alcista,
+        "bos_bear": hay_bos_bajista,
+        "reason": reason,
+    }
