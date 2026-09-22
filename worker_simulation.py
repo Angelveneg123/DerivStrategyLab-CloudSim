@@ -337,15 +337,19 @@ def close_trade(state, exit_price, exit_epoch, reason):
     units = float(pos["position_size"])
     atr = float(pos["entry_atr"])
 
-    exit_slippage = rng.uniform(
-        0.0,
-        max(0.0, BACKTEST_SLIPPAGE_ATR_MAX) * atr,
-    )
-
-    # Long-only: TP recibe deslizamiento desfavorable hacia abajo.
-    if reason == "take_profit":
-        executed_exit = max(1e-12, exit_price - exit_slippage)
+    # Modelo V3:
+    # - STOP LOSS virtual: se ejecuta exactamente en el SL planificado.
+    #   No se permite que un salto de tick convierta un riesgo de ~0.5%
+    #   en una pérdida varias veces mayor.
+    # - TAKE PROFIT: conserva el slippage adverso del simulador.
+    if reason == "stop_loss":
+        exit_slippage = 0.0
+        executed_exit = max(1e-12, exit_price)
     else:
+        exit_slippage = rng.uniform(
+            0.0,
+            max(0.0, BACKTEST_SLIPPAGE_ATR_MAX) * atr,
+        )
         executed_exit = max(1e-12, exit_price - exit_slippage)
 
     if direction == BUY:
@@ -356,6 +360,17 @@ def close_trade(state, exit_price, exit_epoch, reason):
     spread_cost = atr * SPREAD_ATR_FRAC * units
     commission = max(0.0, BACKTEST_COMMISSION_PER_TRADE_USD)
     profit = gross - spread_cost - commission
+
+    if reason == "stop_loss":
+        planned_risk = safe_float(pos.get("planned_risk_cash"), 0.0)
+        realized_loss = abs(min(0.0, profit))
+        print(
+            f"[CloudSim][RISK_DIAG] STOP exacto | "
+            f"SL={float(pos['stop_price']):.5f} | ejecutado={executed_exit:.5f} | "
+            f"riesgo_planeado=${planned_risk:.4f} | "
+            f"perdida_real=${realized_loss:.4f} | spread=${spread_cost:.4f}",
+            flush=True,
+        )
 
     state["balance"] = safe_float(state["balance"]) + profit
     state["equity"] = state["balance"]
@@ -438,7 +453,9 @@ def maybe_exit_on_tick(state, price, epoch):
 
     if direction == BUY:
         if price <= stop:
-            close_trade(state, min(stop, price), epoch, "stop_loss")
+            # HARD STOP V3: aunque el tick haya saltado por debajo del SL,
+            # la simulación valida el riesgo cerrando en el stop programado.
+            close_trade(state, stop, epoch, "stop_loss")
         elif price >= take:
             close_trade(state, take, epoch, "take_profit")
     else:
@@ -616,7 +633,7 @@ def maybe_open_from_closed_candle(state, candles):
 
     state["last_entry_signal_epoch"] = signal_epoch
     state["open_trade"] = {
-        "execution_model_version": "2_adverse_stop_slippage",
+        "execution_model_version": "3_hard_stop_exact",
         "direction": BUY,
         "market_model": "CFD_STANDARD_VIRTUAL",
         "signal_entry_price": signal_entry,
@@ -632,6 +649,9 @@ def maybe_open_from_closed_candle(state, candles):
         "take_price": take,
         "position_size": position_size,
         "risk_pct": RIESGO_POR_OPERACION_PCT,
+        "planned_risk_cash": safe_float(state["balance"], START_BALANCE)
+        * (RIESGO_POR_OPERACION_PCT / 100.0),
+        "planned_stop_price": stop,
         "stop_atr_mult": SL_ATR_MULT,
         "reward_ratio": REWARD_RATIO,
     }
