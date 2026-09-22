@@ -20,6 +20,7 @@ from config import (  # noqa: E402
     BACKTEST_COMMISSION_PER_TRADE_USD,
     BACKTEST_RANDOM_SEED,
     BACKTEST_SLIPPAGE_ATR_MAX,
+    HTF_GRANULARITY,
     MAX_DRAWDOWN_STOP_PCT,
     REWARD_RATIO,
     RIESGO_POR_OPERACION_PCT,
@@ -28,9 +29,11 @@ from config import (  # noqa: E402
 )
 from indicators.atr import calculate_atr  # noqa: E402
 from strategy.registry import generate_registered_signals, validate_strategy_id  # noqa: E402
+from strategy.hybrid_strategy import diagnosticar_hybrid_ultima_vela  # noqa: E402
 from strategy.risk_manager import calculate_position_size, calculate_stop_take  # noqa: E402
 from strategy.strategy_engine import BUY, HOLD  # noqa: E402
 from telegram_notifier import send_pre_entry  # noqa: E402
+from utils.timeframes import aggregate_ohlc_to_timeframe  # noqa: E402
 
 # ---------------------------------------------------------------------
 # DATOS PÚBLICOS DE MERCADO
@@ -52,6 +55,7 @@ GRANULARITY = int(os.getenv("SIM_GRANULARITY", "60"))
 START_BALANCE = float(os.getenv("SIM_START_BALANCE", "100"))
 WARMUP_CANDLES = int(os.getenv("SIM_WARMUP_CANDLES", "4000"))
 RECONNECT_SECONDS = int(os.getenv("SIM_RECONNECT_SECONDS", "5"))
+ENABLE_HYBRID_DIAGNOSTICS = os.getenv("SIM_DIAGNOSTICS", "1").strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
 
 DATA_ROOT = Path(os.getenv("SIM_DATA_DIR", "/data/cloud_sim"))
 try:
@@ -473,6 +477,58 @@ def maybe_open_from_closed_candle(state, candles):
         flush=True,
     )
 
+    # Diagnóstico profundo EXCLUSIVO de hybrid_long_only.
+    # Solo imprime datos: NO altera señales ni abre/cierra operaciones.
+    if ENABLE_HYBRID_DIAGNOSTICS and STRATEGY == "hybrid_long_only":
+        try:
+            epochs_htf, highs_htf, lows_htf, closes_htf = aggregate_ohlc_to_timeframe(
+                epochs,
+                highs,
+                lows,
+                closes,
+                target_granularity=HTF_GRANULARITY,
+                source_granularity=GRANULARITY,
+            )
+
+            diag = diagnosticar_hybrid_ultima_vela(
+                epochs,
+                highs,
+                lows,
+                closes,
+                epochs_htf,
+                highs_htf,
+                lows_htf,
+                closes_htf,
+                adx_minimo_htf=25,
+                rsi_max_compra=80,
+                structure_lookback=2,
+            )
+
+            raw_signal = diag.get("raw_signal") or HOLD
+            final_signal = signal or HOLD
+            reason = diag.get("reason") or "sin_motivo"
+
+            if raw_signal == "SELL" and final_signal == HOLD:
+                reason = "sell_valido_convertido_a_hold_por_long_only"
+
+            rsi_value = diag.get("rsi")
+            rsi_text = "None" if rsi_value is None else f"{float(rsi_value):.2f}"
+
+            print(
+                f"[CloudSim][HYBRID_DIAG] vela={candle_time} | "
+                f"raw={raw_signal} | final={final_signal} | "
+                f"htf={diag.get('htf_bias')} | rsi={rsi_text} | "
+                f"bos_up={diag.get('bos_bull')} | "
+                f"bos_down={diag.get('bos_bear')} | "
+                f"motivo={reason}",
+                flush=True,
+            )
+        except Exception as diag_exc:
+            print(
+                f"[CloudSim][HYBRID_DIAG] error_solo_diagnostico={diag_exc}",
+                flush=True,
+            )
+
     # Esta versión es LONG-only.
     if signal != BUY:
         return
@@ -769,4 +825,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
